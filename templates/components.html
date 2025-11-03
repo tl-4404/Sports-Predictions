@@ -1,0 +1,41 @@
+{% macro league_pills(leagues, active) %}
+  <div class="pills" role="tablist" aria-label="Leagues">
+    <a class="pill {{ 'active' if active=='ALL' }}" href="{{ url_for('index', league='ALL', q=request.args.get('q','')) }}" role="tab" aria-selected="{{ 'true' if active=='ALL' else 'false' }}">All</a>
+    {% for lg in leagues %}
+      {% set is_active = 'true' if active == lg.upper() else 'false' %}
+      <a class="pill {{ 'active' if is_active=='true' }}" href="{{ url_for('index', league=lg, q=request.args.get('q','')) }}" role="tab" aria-selected="{{ is_active }}">{{ lg }}</a>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{% macro metric(label, value, hint=None) %}
+  <div class="metric">
+    <div class="metric-label">{{ label }}</div>
+    <div class="metric-value">{{ value }}</div>
+    {% if hint %}<div class="metric-hint">{{ hint }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro pick_card(pick, game) %}
+  <article class="card pick">
+    <header class="card-head">
+      <span class="badge">{{ pick.league }}</span>
+      <span class="muted">{{ pick.market }}</span>
+    </header>
+    <h3 class="card-title">{{ pick.pick }}</h3>
+    <p class="muted">{{ pick.reason }}</p>
+    <div class="card-metrics">
+      {{ metric("Edge", pick.edge) }}
+      {{ metric("Confidence", (pick.confidence * 100)|round(0)|int ~ "%" ) }}
+      <div class="metric">
+        <div class="metric-label">Matchup</div>
+        <div class="metric-value">{{ game.away }} @ {{ game.home }}</div>
+        <div class="metric-hint">{{ game.start_utc|localtime }}</div>
+      </div>
+    </div>
+    <footer class="card-foot">
+      <button class="btn btn-primary" type="button" aria-label="Add {{ pick.pick }} to bet slip">Add to Slip</button>
+      <button class="btn btn-ghost" type="button">Details</button>
+    </footer>
+  </article>
+{% endmacro %}
