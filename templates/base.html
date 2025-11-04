@@ -6,7 +6,7 @@
   <title>{% block title %}SportsAid{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -32,7 +32,7 @@
 
   <footer class="site-footer">
     <div class="container row">
-      <p class="muted">© {{  now().year if callable(now) else '' }} SportsAid. For informational purposes only. Not gambling advice.</p>
+      <p class="muted">© {{ current_year }} SportsAid. For informational purposes only. Not gambling advice.</p>
       <div class="footer-links">
         <a href="#">Terms</a>
         <a href="#">Privacy</a>

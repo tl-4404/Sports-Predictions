@@ -58,6 +58,10 @@ def american_to_prob(american):
         return 100 / (american + 100)
     return -american / (-american + 100)
 
+@app.context_processor
+def inject_globals():
+    return {"current_year": datetime.utcnow().year}
+
 @app.template_filter("implied")
 def implied_filter(odds):
     p = american_to_prob(odds)
