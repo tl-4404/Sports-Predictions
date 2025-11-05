@@ -80,6 +80,19 @@ def init_db():
             created_at TEXT NOT NULL
         );
     """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_email TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            category TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open'
+        );
+    """)
+
     db.commit()
 
 # log-in
@@ -207,6 +220,50 @@ def logout():
 def my_card():
     return render_template("my_card.html")
 
+@app.route("/support", methods=["GET", "POST"])
+@login_required
+def support():
+    if request.method == "POST":
+        email = (current_user.email if hasattr(current_user, "is_authenticated") and current_user.is_authenticated
+                                    else request.form.get("email", "").strip().lower())
+        subject = request.form.get("subject", "").strip()
+        category = request.form.get("category", "General").strip()
+        message = request.form.get("message", "").strip()
+        honeypot = request.form.get("website")
+
+        if honeypot: 
+            flash("Submission failed. Please try again. Bot???", "error")
+            return redirect(url_for("support"))
+
+        if not user_email or not subject or not message:
+            flash("Email, subject, and message are required.", "error")
+            return redirect(url_for("support"))
+        
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO support_tickets (user_email, subject, category, message, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (email, subject, category, message, datetime.utcnow().isoformat())
+        )
+        db.commit()
+
+        flash("Thanks! Your ticket has been received. We'll email you soon.", "success")
+        return redirect(url_for("support_success"))
+
+    return render_template("support.html")
+
+@app.route("/support/success")
+def support_success():
+    return render_template("support_success.html")
+
+@app.route("/admin/tickets")
+@login_required
+def admin_tickets():
+    db = get_db()
+    rows = db.execute("SELECT * FROM support_tickets ORDER BY id DESC LIMIT 100").fetchall()
+    return render_template("admin_tickets.html", rows=rows)
 
 if __name__ == "__main__":
     with app.app_context():

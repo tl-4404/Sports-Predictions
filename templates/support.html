@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Support · SportsAid{% endblock %}
+{% block content %}
+  <section class="hero">
+    <div class="hero-text">
+      <h1>How can we help?</h1>
+      <p class="lead">Send us a message and we'll get back to you soon</p>
+    </div>
+    <div class="hero-panel">
+      <div class="panel">
+        <h3 class="section-title">Quick info</h3>
+        <ul class="muted" style="margin:0;padding-left:18px;line-height:1.6">
+          <li>For account access issues, include the email you registered with.</li>
+          <li>For data/model questions, paste the league, game, and line shown.</li>
+          <li>We never ask for passwords or payment over email.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% if msgs %}
+    <div class="panel" style="margin:12px 0">
+      {% for cat, msg in msgs %}
+        <div class="muted"><strong>{{ cat|capitalize }}:</strong> {{ msg }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+   {% endwith %}
+
+
+  <section class="grid two-col">
+    <div>
+      <h2 class="section-title">Contact Support</h2>
+      <form method="post" class="card" style="display:grid; gap:10px; max-width:600px">
+        {% if not current_user.is_authenticated %}
+          <label>Email
+            <input name="email" type="email" required placeholder="you@example.com"
+                   style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel);
+                        color:var(--text)">
+          </label>
+        {% endif %}
+
+        # honeypot
+        <div style="position:absolute; left:-9999px; visibility:hidden">
+          <label>Website <input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+        </div>
+
+        <label>Subject
+          <input name="subject" required placeholder="Brief summary"
+                 style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel); color:var(--text)">
+        </label>
+
+        <label>Category
+          <select name="category" style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel); color:var(--text)">
+            <option>General</option>
+            <option>Account</option>
+            <option>Billing</option>
+            <option>Data / Lines</option>
+            <option>Bugs</option>
+          </select>
+        </label>
+
+        <label>Message
+          <textarea name="message" required rows="6" placeholder="Describe the issue…"
+                    style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel); color:var(--text)"></textarea>
+        </label>
+
+        <div style="display:flex; gap:8px">
+          <button class="btn btn-primary" type="submit">Send</button>
+          <a class="btn btn-ghost" href="{{ url_for('index') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+
+    {# faq #}
+    <div>
+      <h2 class="section-title">FAQ</h2>
+      <div class="cards">
+        <article class="card">
+          <h3 class="card-title">I don't see styling / CSS</h3>
+          <p class="muted">Ensure the file is in <code>/static/styles.css</code> and your base template links it using <code>url_for('static', filename='styles.css')</code>.</p>
+        </article>
+        <article class="card">
+          <h3 class="card-title">Templates show raw {% raw %}<code>{% ... %}</code>{% endraw %}</h3>
+          <p class="muted">Run the Flask server and visit <code>http://127.0.0.1:5000</code>; don’t open HTML files directly.</p>
+        </article>
+        <article class="card">
+          <h3 class="card-title">How do I reset my password?</h3>
+          <p class="muted">Contact us with your account email; we'll send a reset link.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+{% endblock %}

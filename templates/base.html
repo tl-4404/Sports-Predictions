@@ -18,10 +18,15 @@
         <a href="{{ url_for('index') }}" class="brand-title">SportsAid</a>
       </div>
       <nav class="nav">
-        <a href="{{ url_for('index') }}" aria-current="page">Home</a>
-        <a href="#" aria-disabled="true">Markets</a>
-        <a href="#" aria-disabled="true">Trends</a>
-        <a href="{{ url_for('my_card') }}" aria-current="page">My Card</a>
+        <a href="{{ url_for('index') }}">Home</a>
+        <a href="{{ url_for('my_card') }}">My Card</a>
+        <a href="{{ url_for('support') }}">Support</a>
+        {% if current_user.is_authenticated %}
+          <span class="muted" style="margin-left:8px;">{{ current_user.email }}</span>
+          <a href="{{ url_for('logout') }}">Logout</a>
+        {% else %}
+          <a href="{{ url_for('login') }}">Login</a>
+        {% endif %}
       </nav>
     </div>
   </header>

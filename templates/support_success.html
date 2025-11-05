@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Support · Message Sent{% endblock %}
+{% block content %}
+  <section class="card" style="max-width:640px">
+    <h1>Thanks — we’ve got your ticket.</h1>
+    <p class="muted">We’ll reply to {{ current_user.email if current_user.is_authenticated else 'your email' }} shortly.</p>
+    <div style="margin-top:12px">
+      <a class="btn btn-primary" href="{{ url_for('index') }}">Back to Home</a>
+      <a class="btn btn-ghost" href="{{ url_for('support') }}">Send another</a>
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Support Tickets{% endblock %}
+{% block content %}
+  <h1>Support Tickets</h1>
+  <div class="table-scroll">
+    <table class="table">
+      <thead><tr><th>ID</th><th>Email</th><th>Subject</th><th>Category</th><th>Created</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.user_email }}</td>
+          <td>{{ r.subject }}</td>
+          <td>{{ r.category }}</td>
+          <td>{{ r.created_at }}</td>
+          <td>{{ r.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
