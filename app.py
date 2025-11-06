@@ -72,6 +72,8 @@ def close_db(exception):
 
 def init_db():
     db = get_db()
+
+    # users
     db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +83,7 @@ def init_db():
         );
     """)
 
+    # support tickets
     db.execute("""
         CREATE TABLE IF NOT EXISTS support_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +94,27 @@ def init_db():
             created_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'open'
         );
+    """)
+
+    # user picks
+    db.executescript("""
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS saved_picks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        game_id INTEGER,
+        league TEXT,
+        market TEXT NOT NULL,          
+        selection TEXT NOT NULL,        
+        odds_american INTEGER,          
+        stake_cents INTEGER DEFAULT 0,  
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_saved_picks_user ON saved_picks(user_id);
     """)
 
     db.commit()
@@ -218,13 +242,45 @@ def logout():
 @app.route("/my-card")
 @login_required
 def my_card():
-    return render_template("my_card.html")
+    db = get_db()
+    picks = db.execute("""
+        SELECT id, league, market, selection, odds_american, stake_cents, created_at
+        FROM saved_picks
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (current_user.id,)).fetchall()
+    return render_template("my_card.html", picks=picks)
+
+@app.route("/picks/add", methods=["POST"])
+@login_required
+def picks_add():
+    game_id     = request.form.get("game_id", type=int)
+    league      = (request.form.get("league") or "").strip()
+    market      = (request.form.get("market") or "").strip()
+    selection   = (request.form.get("selection") or "").strip()
+    odds        = request.form.get("odds", type=int)
+    stake_cents = request.form.get("stake_cents", type=int) or 0
+    notes       = request.form.get("notes", "")
+
+    if not market or not selection:
+        flash("Pick needs a market and selection.", "error")
+        return redirect(url_for("index"))
+
+    db = get_db()
+    db.execute("""
+      INSERT INTO saved_picks (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (current_user.id, game_id, league, market, selection, odds, stake_cents, notes, datetime.utcnow().isoformat()))
+    db.commit()
+
+    flash("Added to your card.", "success")
+    return redirect(url_for("my_card"))
 
 @app.route("/support", methods=["GET", "POST"])
 @login_required
 def support():
     if request.method == "POST":
-        email = (current_user.email if hasattr(current_user, "is_authenticated") and current_user.is_authenticated
+        email = (current_user.email if getattr(current_user, "is_authenticated", False)
                                     else request.form.get("email", "").strip().lower())
         subject = request.form.get("subject", "").strip()
         category = request.form.get("category", "General").strip()

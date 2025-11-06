@@ -1,5 +1,48 @@
 {% extends "base.html" %}
+{% block title %}My Card · SportsAid{% endblock %}
+
 {% block content %}
-<h1>Your Picks</h1>
-<p>Logged in as: {{ current_user.email }}</p>
+  <h1 class="section-title">My Card</h1>
+
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% if msgs %}
+      <div class="panel" style="margin:12px 0">
+        {% for cat, msg in msgs %}
+          <div class="muted"><strong>{{ cat|capitalize }}:</strong> {{ msg }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  {% if picks %}
+    <table class="table" style="width:100%; margin-top:16px; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:8px;">League</th>
+          <th style="text-align:left; padding:8px;">Market</th>
+          <th style="text-align:left; padding:8px;">Selection</th>
+          <th style="text-align:left; padding:8px;">Odds</th>
+          <th style="text-align:left; padding:8px;">Stake</th>
+          <th style="text-align:left; padding:8px;">Added</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in picks %}
+        <tr class="panel" style="margin-bottom:6px;">
+          <td style="padding:8px;">{{ p.league or '—' }}</td>
+          <td style="padding:8px;">{{ p.market }}</td>
+          <td style="padding:8px;">{{ p.selection }}</td>
+          <td style="padding:8px;">{{ p.odds_american }}</td>
+          <td style="padding:8px;">
+            ${{ ((p.stake_cents or 0)/100) | round(2) }}
+          </td>
+          <td style="padding:8px;">{{ p.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+  {% else %}
+    <p class="muted" style="margin-top:18px;">No picks yet. Add some from the home page.</p>
+  {% endif %}
 {% endblock %}

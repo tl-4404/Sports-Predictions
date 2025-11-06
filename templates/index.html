@@ -71,7 +71,26 @@
               <td data-label="Total">{{ g.total }}</td>
               <td data-label="Implied">{{ g.moneyline.home|implied }} / {{ g.moneyline.away|implied }}</td>
               <td class="row-actions">
-                <button class="btn btn-ghost">Add</button>
+                {% if current_user.is_authenticated %}
+                 <form method="post" action="{{ url_for('picks_add') }}" style="display:inline">
+                    <input type="hidden" name="league" value="{{ g.league }}">
+                    <input type="hidden" name="game_id" value="{{ g.id }}">
+                   <input type="hidden" name="market" value="Moneyline">
+                    <input type="hidden" name="selection" value="{{ g.home }}">
+                    <input type="hidden" name="odds" value="{{ g.moneyline.home }}">
+                    <button class="btn btn-ghost" type="submit">Add Home</button>
+                  </form>
+                  <form method="post" action="{{ url_for('picks_add') }}" style="display:inline">
+                    <input type="hidden" name="league" value="{{ g.league }}">
+                    <input type="hidden" name="game_id" value="{{ g.id }}">
+                    <input type="hidden" name="market" value="Moneyline">
+                    <input type="hidden" name="selection" value="{{ g.away }}">
+                    <input type="hidden" name="odds" value="{{ g.moneyline.away }}">
+                    <button class="btn btn-ghost" type="submit">Add Away</button>
+                  </form>
+                {% else %}
+                  <a class="btn btn-ghost" href="{{ url_for('login', next=request.path) }}">Login to add</a>
+                {% endif %}
               </td>
             </tr>
           {% else %}
