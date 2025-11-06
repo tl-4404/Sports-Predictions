@@ -256,31 +256,47 @@ def my_card():
 def picks_add():
     game_id     = request.form.get("game_id", type=int)
     league      = (request.form.get("league") or "").strip()
-    market      = (request.form.get("market") or "").strip()
-    selection   = (request.form.get("selection") or "").strip()
-    odds        = request.form.get("odds", type=int)
+    market      = (request.form.get("market") or "").strip()   
+    side        = (request.form.get("side") or "").strip()       
+    team_home   = (request.form.get("team_home") or "").strip()
+    team_away   = (request.form.get("team_away") or "").strip()
+    line_str    = (request.form.get("line") or "").strip()        
+    odds        = request.form.get("odds", type=int)     
     stake_cents = request.form.get("stake_cents", type=int) or 0
     notes       = request.form.get("notes", "")
 
-    if not market or not selection:
-        flash("Pick needs a market and selection.", "error")
+    if not market or not side:
+        flash("Pick needs a market and side.", "error")
         return redirect(url_for("index"))
+
+    selection = ""
+    if market.lower() == "moneyline":
+        team = team_home if side.lower() == "home" else team_away
+        selection = f"{team} ML"
+    elif market.lower() == "spread":
+        team = team_home if side.lower() == "home" else team_away
+        selection = f"{team} {line_str}" if line_str else f"{team} (Spread)"
+    elif market.lower() == "total":
+        label = "Over" if side.lower() == "over" else "Under"
+        selection = f"{label} {line_str}" if line_str else label
+    else:
+        selection = f"{market} · {side}"
 
     db = get_db()
     db.execute("""
-      INSERT INTO saved_picks (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO saved_picks (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (current_user.id, game_id, league, market, selection, odds, stake_cents, notes, datetime.utcnow().isoformat()))
     db.commit()
 
-    flash("Added to your card.", "success")
+    flash(f"Added: {market} – {selection} @ {odds}", "success")
     return redirect(url_for("my_card"))
 
 @app.route("/support", methods=["GET", "POST"])
 @login_required
 def support():
     if request.method == "POST":
-        email = (current_user.email if getattr(current_user, "is_authenticated", False)
+        user_email = (current_user.email if getattr(current_user, "is_authenticated", False)
                                     else request.form.get("email", "").strip().lower())
         subject = request.form.get("subject", "").strip()
         category = request.form.get("category", "General").strip()
@@ -301,7 +317,7 @@ def support():
             INSERT INTO support_tickets (user_email, subject, category, message, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (email, subject, category, message, datetime.utcnow().isoformat())
+            (user_email, subject, category, message, datetime.utcnow().isoformat())
         )
         db.commit()
 
