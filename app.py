@@ -8,33 +8,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "12345"
 
-DB_PATH = Path("sportsaid.db")
-
-LEAGUES = ["NFL", "NBA", "NHL", "MLB"]
-
-def _mk_game(id_, league, home, away, kickoff_hours=3, home_odds=-135, away_odds=115, total=45.5, spread=-2.5):
-    start = datetime.utcnow() + timedelta(hours=kickoff_hours)
-    return {
-        "id": id_,
-        "league": league,
-        "start_utc": start,
-        "home": home,
-        "away": away,
-        "moneyline": {"home": home_odds, "away": away_odds},
-        "spread": {"line": spread, "fav": home if spread < 0 else away},
-        "total": total,
-        "market": "Main",
-    }
+DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
 
 # place holders
-GAMES = [
-    _mk_game(1, "NFL", "Eagles", "Cowboys", home_odds=-145, away_odds=125, total=47.5, spread=-3.0),
-    _mk_game(2, "NFL", "Chiefs", "Bills", kickoff_hours=20, home_odds=-120, away_odds=105, total=52.0, spread=-1.5),
-    _mk_game(3, "NBA", "Celtics", "Knicks", kickoff_hours=6, home_odds=-180, away_odds=150, total=222.5, spread=-4.5),
-    _mk_game(4, "NHL", "Rangers", "Devils", kickoff_hours=10, home_odds=-115, away_odds=105, total=5.5, spread=-1.5),
-    _mk_game(5, "MLB", "Dodgers", "Giants", kickoff_hours=30, home_odds=-135, away_odds=120, total=8.5, spread=-1.5),
-]
-
 MODEL_PICKS = [
     {
         "league": "NFL",
@@ -117,6 +93,34 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_saved_picks_user ON saved_picks(user_id);
     """)
 
+    # games + odds
+    db.executescript("""
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS events (
+      event_id TEXT PRIMARY KEY,
+      league   TEXT NOT NULL,
+      commence_time TEXT,
+      home     TEXT NOT NULL,
+      away     TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prices (
+      event_id TEXT NOT NULL,
+      book     TEXT NOT NULL,
+      market   TEXT NOT NULL,     
+      outcome  TEXT NOT NULL,     
+      line     REAL,           
+      odds_american INTEGER NOT NULL,
+      as_of    TEXT NOT NULL,
+      PRIMARY KEY (event_id, book, market, outcome),
+      FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prices_event ON prices(event_id);
+    CREATE INDEX IF NOT EXISTS idx_prices_market ON prices(market);
+    """)
+
     db.commit()
 
 # log-in
@@ -155,37 +159,81 @@ def implied_filter(odds):
     return f"{p*100:.1f}%" if p is not None else "—"
 
 @app.template_filter("localtime")
-def localtime_filter(dt):
+def localtime_filter(ts):
+    if not ts:
+        return "TBD"
+    if isinstance(ts, str):
+        ts = ts.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(ts)
+        except ValueError:
+            return ts  
+    else:
+        dt = ts
     return dt.strftime("%b %d, %I:%M %p UTC")
 
 # routes
 @app.route("/")
 def index():
-    league = request.args.get("league", "ALL").upper()
-    q = request.args.get("q", "").strip().lower()
+    db = get_db()
 
-    filtered = GAMES
-    if league != "ALL":
-        filtered = [g for g in filtered if g["league"].upper() == league]
+    # Pull events with the correct time column name
+    events = db.execute("""
+        SELECT event_id, league, commence_time, home, away
+        FROM events
+        WHERE league = 'NBA'
+        ORDER BY IFNULL(commence_time, '') ASC, home ASC
+    """).fetchall()
 
-    if q:
-        filtered = [
-            g for g in filtered
-            if q in g["home"].lower() or q in g["away"].lower()
-        ]
+    games = []
+    preferred = ("DraftKings", "FanDuel", "Caesars", "BetMGM")
 
-    filtered = sorted(filtered, key=lambda g: g["start_utc"])
+    for ev in events:
+        if not ev["home"] or not ev["away"]:
+            continue
 
-    picks = [p for p in MODEL_PICKS if league in ("ALL", p["league"].upper())] or MODEL_PICKS[:1]
+        row = {
+            "id": ev["event_id"],
+            "league": ev["league"],
+            "commence_time": ev["commence_time"],
+            "home": ev["home"],
+            "away": ev["away"],
+            "book": None,
+            "moneyline": {"home": None, "away": None},
+            "spread": None,
+            "total": None,
+        }
 
-    return render_template(
-        "index.html",
-        leagues=LEAGUES,
-        active_league=league,
-        games=filtered,
-        picks=picks,
-        query=q,
-    )
+        def moneyline_for(book):
+            return db.execute(
+                """SELECT outcome, odds_american
+                   FROM prices
+                   WHERE event_id=? AND book=? AND market='h2h'""",
+                (ev["event_id"], book)
+            ).fetchall()
+
+        ml = []
+        for b in preferred:
+            ml = moneyline_for(b)
+            if ml:
+                row["book"] = b
+                break
+        if not ml:
+            any_book = db.execute(
+                "SELECT DISTINCT book FROM prices WHERE event_id=? LIMIT 1",
+                (ev["event_id"],)
+            ).fetchone()
+            if any_book:
+                row["book"] = any_book["book"]
+                ml = moneyline_for(row["book"])
+
+        if ml:
+            ml_map = {m["outcome"]: m["odds_american"] for m in ml}
+            row["moneyline"]["home"] = ml_map.get("Home")
+            row["moneyline"]["away"] = ml_map.get("Away")
+        games.append(row)
+
+    return render_template("index.html", games=games)
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -231,7 +279,6 @@ def login():
         return redirect(url_for("login"))
 
     return render_template("login.html")
-
 
 @app.route("/logout")
 @login_required

@@ -54,8 +54,6 @@
             <th scope="col">League</th>
             <th scope="col">Matchup</th>
             <th scope="col">Moneyline</th>
-            <th scope="col">Spread</th>
-            <th scope="col">Total</th>
             <th scope="col">Implied (H/A)</th>
             <th scope="col" class="visually-hidden">Actions</th>
           </tr>
@@ -63,16 +61,14 @@
           <tbody>
           {% for g in games %}
             <tr>
-              <td data-label="Time">{{ g.start_utc|localtime }}</td>
+              <td data-label="Time">{{ g.commence_time|localtime }}</td>
               <td data-label="League"><span class="badge">{{ g.league }}</span></td>
               <td data-label="Matchup"><strong>{{ g.away }}</strong> @ <strong>{{ g.home }}</strong></td>
               <td data-label="Moneyline">{{ g.moneyline.home }} / {{ g.moneyline.away }}</td>
-              <td data-label="Spread">{{ g.spread.fav }} {{ g.spread.line }}</td>
-              <td data-label="Total">{{ g.total }}</td>
               <td data-label="Implied">{{ g.moneyline.home|implied }} / {{ g.moneyline.away|implied }}</td>
               <td class="row-actions">
                 {% if current_user.is_authenticated %}
-                  {# ========== MONEYLINE ========== #}
+                  {# ========== money lines ========== #}
                   <form method="post" action="{{ url_for('picks_add') }}">
                     <input type="hidden" name="league"     value="{{ g.league }}">
                     <input type="hidden" name="game_id"    value="{{ g.id }}">
@@ -93,56 +89,6 @@
                     <input type="hidden" name="team_away"  value="{{ g.away }}">
                     <input type="hidden" name="odds"       value="{{ g.moneyline.away }}">
                     <button class="btn btn-ghost" type="submit">ML {{ g.away }} ({{ g.moneyline.away }})</button>
-                  </form>
-                
-                  {# ========== SPREAD ========== #}
-                  <form method="post" action="{{ url_for('picks_add') }}">
-                    <input type="hidden" name="league"     value="{{ g.league }}">
-                    <input type="hidden" name="game_id"    value="{{ g.id }}">
-                    <input type="hidden" name="market"     value="Spread">
-                    <input type="hidden" name="side"       value="Home">
-                    <input type="hidden" name="team_home"  value="{{ g.home }}">
-                    <input type="hidden" name="team_away"  value="{{ g.away }}">
-                    <input type="hidden" name="line"       value="{{ g.spread.home_line }}">
-                    <input type="hidden" name="odds"       value="{{ g.spread.home_odds }}">
-                    <button class="btn btn-ghost" type="submit">{{ g.home }} {{ g.spread.home_line }} ({{ g.spread.home_odds }})</button>
-                  </form>
-                
-                  <form method="post" action="{{ url_for('picks_add') }}">
-                    <input type="hidden" name="league"     value="{{ g.league }}">
-                    <input type="hidden" name="game_id"    value="{{ g.id }}">
-                    <input type="hidden" name="market"     value="Spread">
-                    <input type="hidden" name="side"       value="Away">
-                    <input type="hidden" name="team_home"  value="{{ g.home }}">
-                    <input type="hidden" name="team_away"  value="{{ g.away }}">
-                    <input type="hidden" name="line"       value="{{ g.spread.away_line }}">
-                    <input type="hidden" name="odds"       value="{{ g.spread.away_odds }}">
-                    <button class="btn btn-ghost" type="submit">{{ g.away }} {{ g.spread.away_line }} ({{ g.spread.away_odds }})</button>
-                  </form>
-                
-                  {# ========== TOTAL ========== #}
-                  <form method="post" action="{{ url_for('picks_add') }}">
-                    <input type="hidden" name="league"     value="{{ g.league }}">
-                    <input type="hidden" name="game_id"    value="{{ g.id }}">
-                    <input type="hidden" name="market"     value="Total">
-                    <input type="hidden" name="side"       value="Over">
-                    <input type="hidden" name="team_home"  value="{{ g.home }}">
-                    <input type="hidden" name="team_away"  value="{{ g.away }}">
-                    <input type="hidden" name="line"       value="{{ g.total.line }}">
-                    <input type="hidden" name="odds"       value="{{ g.total.over_odds }}">
-                    <button class="btn btn-ghost" type="submit">Over {{ g.total.line }} ({{ g.total.over_odds }})</button>
-                  </form>
-                
-                  <form method="post" action="{{ url_for('picks_add') }}">
-                    <input type="hidden" name="league"     value="{{ g.league }}">
-                    <input type="hidden" name="game_id"    value="{{ g.id }}">
-                    <input type="hidden" name="market"     value="Total">
-                    <input type="hidden" name="side"       value="Under">
-                    <input type="hidden" name="team_home"  value="{{ g.home }}">
-                    <input type="hidden" name="team_away"  value="{{ g.away }}">
-                    <input type="hidden" name="line"       value="{{ g.total.line }}">
-                    <input type="hidden" name="odds"       value="{{ g.total.under_odds }}">
-                    <button class="btn btn-ghost" type="submit">Under {{ g.total.line }} ({{ g.total.under_odds }})</button>
                   </form>
                 {% else %}
                   <a class="btn btn-ghost" href="{{ url_for('login', next=request.path) }}">Login to add</a>
