@@ -1,11 +1,3 @@
-/*
-====================================================================
-  SportsAid – Refactored & Commented Stylesheet
-  - Same classes & variables as your original file; no breaking changes
-  - Organized into sections, consistently formatted, and documented
-====================================================================
-*/
-
 /* ------------------------------------------------------------------
    1) Design Tokens (CSS Variables)
 ------------------------------------------------------------------- */
@@ -347,7 +339,7 @@ a {
 
 .row-actions { text-align: right; }
 
-/* Visually hidden but accessible */
+/* Visually hidden but accessible (honeypot to catch bot spam) */
 .visually-hidden {
   position: absolute;
   width: 1px;

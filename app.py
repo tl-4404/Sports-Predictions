@@ -10,28 +10,6 @@ app.config["SECRET_KEY"] = "12345"
 
 DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
 
-# place holders
-MODEL_PICKS = [
-    {
-        "league": "NFL",
-        "market": "Spread",
-        "pick": "Eagles -3.0",
-        "edge": "+4.1% EV",
-        "confidence": 0.72,
-        "reason": "Model favors PHI by 5.4 vs line -3.0",
-        "game_id": 1,
-    },
-    {
-        "league": "NBA",
-        "market": "Total",
-        "pick": "BOS/NYK Over 222.5",
-        "edge": "+2.6% EV",
-        "confidence": 0.64,
-        "reason": "Pace-up spot; projection 226.3",
-        "game_id": 3,
-    },
-]
-
 # sql helpers
 def get_db():
     if "db" not in g:
