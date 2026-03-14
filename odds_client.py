@@ -1,16 +1,23 @@
 import os, requests, sqlite3, pandas as pd
 from datetime import datetime, timezone
 from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv()
+# api
 API_KEY = os.getenv("ODDS_API_KEY")
+# odds_client route
 BASE = "https://api.the-odds-api.com/v4"
 DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
 
 PREFERRED_BOOKS = ("DraftKings", "FanDuel", "Caesars", "BetMGM")
 
+# fetch current odds
 def fetch_nba_odds():
+    # check for API key
     if not API_KEY:
         raise RuntimeError("Set ODDS_API_KEY in your environment.")
+    # request odds from api
     r = requests.get(
         f"{BASE}/sports/basketball_nba/odds",
         params={
@@ -22,12 +29,16 @@ def fetch_nba_odds():
         },
         timeout=20,
     )
+    # check api response
     r.raise_for_status()
+    # formats into json structure
     data = r.json()
+    # check for empty data
     if not isinstance(data, list) or not data:
         print("Warning: API returned no events.")
     return data
 
+# format json -> pd frames
 def normalize_to_frames(events_json):
     as_of = datetime.now(timezone.utc).isoformat()
     event_rows, price_rows = [], []
@@ -41,7 +52,7 @@ def normalize_to_frames(events_json):
             "away": ev.get("away_team"),
         })
 
-        # choose first available preferred book
+        # set bk to the the first book in preferred book with available odds
         bk = None
         for name in PREFERRED_BOOKS:
             bk = next((b for b in ev.get("bookmakers", []) if b.get("title") == name), None)
@@ -50,6 +61,7 @@ def normalize_to_frames(events_json):
         if not bk:
             continue
 
+        # get all markets for bk
         markets = {m["key"]: m for m in bk.get("markets", [])}
 
         # moneyline (h2h)
@@ -58,21 +70,28 @@ def normalize_to_frames(events_json):
             mm = {o["name"]: o["price"] for o in ml.get("outcomes", [])}
             if ev["home_team"] in mm:
                 price_rows.append({
-                    "event_id": ev["id"], "book": bk["title"], "market": "h2h",
-                    "outcome": "Home", "line": None,
+                    "event_id": ev["id"], 
+                    "book": bk["title"], 
+                    "market": "h2h",
+                    "outcome": "Home", 
+                    "line": None,
                     "odds_american": int(mm[ev["home_team"]]),
                     "as_of": as_of
                 })
             if ev["away_team"] in mm:
                 price_rows.append({
-                    "event_id": ev["id"], "book": bk["title"], "market": "h2h",
-                    "outcome": "Away", "line": None,
+                    "event_id": ev["id"], 
+                    "book": bk["title"], 
+                    "market": "h2h",
+                    "outcome": "Away", 
+                    "line": None,
                     "odds_american": int(mm[ev["away_team"]]),
                     "as_of": as_of
                 })
 
     return pd.DataFrame(event_rows), pd.DataFrame(price_rows)
 
+# ensure events table format/exists
 def ensure_schema(db):
     db.executescript("""
     PRAGMA foreign_keys = ON;
@@ -98,14 +117,15 @@ def ensure_schema(db):
     );
     """)
 
+# update/insert events & odds
 def upsert(df_events, df_prices):
     db = sqlite3.connect(DB_PATH)
     try:
         ensure_schema(db)
-
+        # remove old data
         db.execute("DELETE FROM prices;")
         db.execute("DELETE FROM events;")
-
+        # insert new events/odds to db
         if not df_events.empty:
             df_events.to_sql("events", db, if_exists="append", index=False)
         if not df_prices.empty:

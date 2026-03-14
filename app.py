@@ -18,12 +18,14 @@ def get_db():
         g.db = conn
     return g.db
 
+# close db when not in use
 @app.teardown_appcontext
 def close_db(exception):
     db = g.pop("db", None)
     if db is not None:
         db.close()
-
+    
+# initializes db
 def init_db():
     db = get_db()
 
@@ -51,6 +53,7 @@ def init_db():
     """)
 
     # user picks
+    # connects via users(id)
     db.executescript("""
     PRAGMA foreign_keys = ON;
 
@@ -101,23 +104,25 @@ def init_db():
 
     db.commit()
 
-# log-in
+# log-in 
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
+# User object
 class User(UserMixin):
     def __init__(self, row):
         self.id = row["id"]
         self.email = row["email"]
         self.password_hash = row["password_hash"]
 
+# loads user
 @login_manager.user_loader
 def load_user(user_id):
     db = get_db()
     row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return User(row) if row else None
 
-# card maker helpers
+# card maker helpers (converts american odds to probability)
 def american_to_prob(american):
     """Convert American odds to implied probability (no vigorish removed)."""
     if american is None:
@@ -127,15 +132,18 @@ def american_to_prob(american):
         return 100 / (american + 100)
     return -american / (-american + 100)
 
+# globals (return currect year)
 @app.context_processor
 def inject_globals():
     return {"current_year": datetime.utcnow().year}
 
+# prob filter
 @app.template_filter("implied")
 def implied_filter(odds):
     p = american_to_prob(odds)
     return f"{p*100:.1f}%" if p is not None else "—"
 
+# local time filter
 @app.template_filter("localtime")
 def localtime_filter(ts):
     if not ts:
@@ -151,11 +159,13 @@ def localtime_filter(ts):
     return dt.strftime("%b %d, %I:%M %p UTC")
 
 # routes
+
+# default page
 @app.route("/")
 def index():
     db = get_db()
 
-    # Pull events with the correct time column name
+    # Pull events (order by start time)
     events = db.execute("""
         SELECT event_id, league, commence_time, home, away
         FROM events
@@ -166,10 +176,12 @@ def index():
     games = []
     preferred = ("DraftKings", "FanDuel", "Caesars", "BetMGM")
 
+    # get odds/organize per game
     for ev in events:
         if not ev["home"] or not ev["away"]:
             continue
 
+        # organize each game
         row = {
             "id": ev["event_id"],
             "league": ev["league"],
@@ -182,6 +194,7 @@ def index():
             "total": None,
         }
 
+        # get ML for specific book
         def moneyline_for(book):
             return db.execute(
                 """SELECT outcome, odds_american
@@ -191,11 +204,13 @@ def index():
             ).fetchall()
 
         ml = []
+        # get ML for all preferred books
         for b in preferred:
             ml = moneyline_for(b)
             if ml:
                 row["book"] = b
                 break
+        # if no preferred select random book
         if not ml:
             any_book = db.execute(
                 "SELECT DISTINCT book FROM prices WHERE event_id=? LIMIT 1",
@@ -204,7 +219,7 @@ def index():
             if any_book:
                 row["book"] = any_book["book"]
                 ml = moneyline_for(row["book"])
-
+        # get all odds in ML
         if ml:
             ml_map = {m["outcome"]: m["odds_american"] for m in ml}
             row["moneyline"]["home"] = ml_map.get("Home")
@@ -213,61 +228,69 @@ def index():
 
     return render_template("index.html", games=games)
 
+# register page
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         email = request.form["email"].strip().lower()
         password = request.form["password"]
-
+        # missing email or password
         if not email or not password:
             flash("Email and password are required.", "error")
             return redirect(url_for("register"))
 
         db = get_db()
+        # check if email is in use
         existing = db.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone()
         if existing:
             flash("Email already registered.", "error")
             return redirect(url_for("register"))
-
+        # add user to db
         db.execute(
             "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
             (email, generate_password_hash(password), datetime.utcnow().isoformat())
         )
         db.commit()
-
+        # log user in
         user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         login_user(User(user))
         return redirect(url_for("index"))
 
     return render_template("register.html")
 
+# login page
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        # get passed in fields
         email = request.form["email"].strip().lower()
         password = request.form["password"]
 
         db = get_db()
         row = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        # check if email & password match
         if row and check_password_hash(row["password_hash"], password):
             login_user(User(row), remember=True)
             return redirect(url_for("index"))
-
+        # if info does not match, flash error
         flash("Invalid login.", "error")
         return redirect(url_for("login"))
 
     return render_template("login.html")
 
+# logout page
 @app.route("/logout")
 @login_required
 def logout():
     logout_user()
     return redirect(url_for("index"))
 
+# saved picks (card) page
 @app.route("/my-card")
 @login_required
 def my_card():
     db = get_db()
+    # query all saved picks for user
     picks = db.execute("""
         SELECT id, league, market, selection, odds_american, stake_cents, created_at
         FROM saved_picks
@@ -276,9 +299,11 @@ def my_card():
     """, (current_user.id,)).fetchall()
     return render_template("my_card.html", picks=picks)
 
+# add a pick to card
 @app.route("/picks/add", methods=["POST"])
 @login_required
 def picks_add():
+    # get all pick info
     game_id     = request.form.get("game_id", type=int)
     league      = (request.form.get("league") or "").strip()
     market      = (request.form.get("market") or "").strip()   
@@ -289,11 +314,11 @@ def picks_add():
     odds        = request.form.get("odds", type=int)     
     stake_cents = request.form.get("stake_cents", type=int) or 0
     notes       = request.form.get("notes", "")
-
+    # check for valid market & side
     if not market or not side:
         flash("Pick needs a market and side.", "error")
         return redirect(url_for("index"))
-
+    # get selection
     selection = ""
     if market.lower() == "moneyline":
         team = team_home if side.lower() == "home" else team_away
@@ -306,7 +331,7 @@ def picks_add():
         selection = f"{label} {line_str}" if line_str else label
     else:
         selection = f"{market} · {side}"
-
+    # save pick (add to user's card)
     db = get_db()
     db.execute("""
         INSERT INTO saved_picks (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
@@ -314,28 +339,30 @@ def picks_add():
     """, (current_user.id, game_id, league, market, selection, odds, stake_cents, notes, datetime.utcnow().isoformat()))
     db.commit()
 
-    flash(f"Added: {market} – {selection} @ {odds}", "success")
+    flash(f"Added: {market} - {selection} @ {odds}", "success")
     return redirect(url_for("my_card"))
 
+# support page
 @app.route("/support", methods=["GET", "POST"])
 @login_required
 def support():
     if request.method == "POST":
+        # get user info
         user_email = (current_user.email if getattr(current_user, "is_authenticated", False)
                                     else request.form.get("email", "").strip().lower())
         subject = request.form.get("subject", "").strip()
         category = request.form.get("category", "General").strip()
         message = request.form.get("message", "").strip()
         honeypot = request.form.get("website")
-
+        # bot/spam detection
         if honeypot: 
             flash("Submission failed. Please try again. Bot???", "error")
             return redirect(url_for("support"))
-
+        # check for empty fields
         if not user_email or not subject or not message:
             flash("Email, subject, and message are required.", "error")
             return redirect(url_for("support"))
-        
+        # save ticket
         db = get_db()
         db.execute(
             """
@@ -351,10 +378,12 @@ def support():
 
     return render_template("support.html")
 
+# ticket success page
 @app.route("/support/success")
 def support_success():
     return render_template("support_success.html")
 
+# admin page for support
 @app.route("/admin/tickets")
 @login_required
 def admin_tickets():
