@@ -58,7 +58,7 @@ def call_leaguedash_stats(season, date_api, measure_type, season_type = SEASON_T
             measure_type_detailed_defense=measure_type,   
             per_mode_detailed=per_mode,
             date_to_nullable=date_api,
-            timeout=3
+            timeout=10
         )
         return stats.get_data_frames()[0]
     # if api timeout, raise error

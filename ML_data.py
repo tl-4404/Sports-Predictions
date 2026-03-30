@@ -4,9 +4,9 @@ from requests.exceptions import ReadTimeout
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder, LeagueDashTeamStats
 # sleep time between API calls
-SLEEP = 0.7
+SLEEP = 0.6
 # api parameters
-SEASONS = ["2023-24"]   
+SEASONS = ["2021-22", "2022-23", "2023-24"]
 SEASON_TYPE = "Regular Season"
 PER_MODE = "PerGame"
 MEASURE_TYPES = [
@@ -19,21 +19,22 @@ MEASURE_TYPES = [
 # cache paths
 CACHE_ROOT = "cache"
 SNAPSHOT_DIR = os.path.join(CACHE_ROOT, "team_snapshots")
-PROGRESS_FILE = os.path.join(CACHE_ROOT, "last_date.txt")
 # create cache
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 os.makedirs(CACHE_ROOT, exist_ok=True)
 
-# loads last date of cache
-def load_last_date():
-    if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE) as f:
+# loads last date of cache for a season
+def load_last_date(season):
+    progress_file = os.path.join(CACHE_ROOT, f"last_date_{season}.txt")
+    if os.path.exists(progress_file):
+        with open(progress_file) as f:
             return pd.to_datetime(f.read().strip())
     return None
 
-# save last date cached
-def save_last_date(d):
-    with open(PROGRESS_FILE, "w") as f:
+# save last date cached for a season
+def save_last_date(d, season):
+    progress_file = os.path.join(CACHE_ROOT, f"last_date_{season}.txt")
+    with open(progress_file, "w") as f:
         f.write(pd.to_datetime(d).strftime("%Y-%m-%d"))
 
 # api call to get team stats
@@ -45,7 +46,7 @@ def call_leaguedash_stats(season, date_api, measure_type, season_type = SEASON_T
             measure_type_detailed_defense=measure_type,   
             per_mode_detailed=per_mode,
             date_to_nullable=date_api,
-            timeout=5
+            timeout=10
         )
         return stats.get_data_frames()[0]
     # if api timeout, raise error
@@ -86,6 +87,10 @@ def fetch_team_stats(season, date_api):
 
 # build an entire season's team data
 def build_training_data_for_season(season, season_type = SEASON_TYPE):
+    # per-season game cache dir
+    game_cache_dir = os.path.join(CACHE_ROOT, "games", season)
+    os.makedirs(game_cache_dir, exist_ok=True)
+
     # get all games for the season
     gamefinder = LeagueGameFinder(
         season_nullable=season,
@@ -98,10 +103,11 @@ def build_training_data_for_season(season, season_type = SEASON_TYPE):
     games = games.sort_values("GAME_DATE")
 
     rows = []
-    # get last cached date
-    last_done = load_last_date()
+    # get last cached date for this season
+    last_done = load_last_date(season)
     # get data for all games by day
     for game_date, df_day in games.groupby("GAME_DATE"):
+        day_rows = []
         # check for if date is already processed
         if last_done is not None and game_date <= last_done:
             continue
@@ -159,14 +165,25 @@ def build_training_data_for_season(season, season_type = SEASON_TYPE):
             row_df["home_win"] = home_win
 
             rows.append(row_df)
-            # update cached date
-            save_last_date(game_date)
-            time.sleep(0.5) 
-    # check for no games added
-    if not rows:
+            day_rows.append(row_df)
+
+        # concat rows per day & cache
+        if day_rows:
+            day_df = pd.concat(day_rows, ignore_index=True)
+            out_path = os.path.join(game_cache_dir, f"{game_date.strftime('%Y-%m-%d')}.csv")
+            day_df.to_csv(out_path, index=False)
+            print(f"Saved {len(day_df)} game rows to {out_path}")
+            # update cached date for this season
+            save_last_date(game_date, season)
+    # build final training set from all cached game files for this season
+    all_files = sorted(
+        os.path.join(game_cache_dir, f)
+        for f in os.listdir(game_cache_dir) if f.endswith(".csv")
+    )
+    if not all_files:
         raise ValueError(f"No training rows built for season {season} (check API or params).")
-    # concat all game rows to one df & cleans up columns
-    training_df = pd.concat(rows, ignore_index=True)
+
+    training_df = pd.concat([pd.read_csv(f) for f in all_files], ignore_index=True)
     training_df.columns = training_df.columns.str.strip()
 
     print(f"[INFO] Built training set for {season} with {len(training_df)} games.")
@@ -181,14 +198,17 @@ def main():
         df_season = build_training_data_for_season(season)
         all_seasons.append(df_season)
 
-        out_file = f"nba_training_{season.replace('-', '')}.csv"
+        training_dir = os.path.join(CACHE_ROOT, "training_data")
+        os.makedirs(training_dir, exist_ok=True)
+        out_file = os.path.join(training_dir, f"nba_training_{season.replace('-', '')}.csv")
         df_season.to_csv(out_file, index=False)
         print(f"Saved {out_file} with {len(df_season)} rows.")
     # check for more than 1 season
     if len(all_seasons) > 1:
         full_df = pd.concat(all_seasons, ignore_index=True)
-        full_df.to_csv("nba_training_all_seasons_full_simple_loop.csv", index=False)
-        print(f"Saved nba_training_all_seasons_full_simple_loop.csv with {len(full_df)} rows.")
+        combined_path = os.path.join(CACHE_ROOT, "training_data", "nba_training_combined.csv")
+        full_df.to_csv(combined_path, index=False)
+        print(f"Saved nba_training_combined.csv with {len(full_df)} rows.")
 
 
 if __name__ == "__main__":

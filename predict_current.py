@@ -15,11 +15,10 @@ class ml_Model(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
         self.out = nn.Sequential(
-            nn.Linear(input_dim, 64),
+            nn.Linear(input_dim,16),
             nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
+            nn.Dropout(0.3),
+            nn.Linear(16,1)
         )
     
     def forward(self, x):
@@ -51,6 +50,17 @@ df_today.columns = df_today.columns.str.strip()
 if df_today.empty:
     print("No games today or failed to fetch.")
     raise SystemExit
+# build differential features to match training (numeric cols only)
+numeric_cols = df_today.select_dtypes(include="number").columns
+home_stats = {c[len("home_"):]: c for c in numeric_cols if c.startswith("home_")}
+away_stats = {c[len("away_"):]: c for c in numeric_cols if c.startswith("away_")}
+shared = sorted(home_stats.keys() & away_stats.keys())
+diff_df = pd.DataFrame(
+    {f"diff_{stat}": df_today[home_stats[stat]].values - df_today[away_stats[stat]].values for stat in shared},
+    index=df_today.index
+)
+df_today = pd.concat([df_today, diff_df], axis=1)
+
 # check for all feature cols present
 missing = [c for c in feature_cols if c not in df_today.columns]
 if missing:
