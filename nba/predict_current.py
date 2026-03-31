@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -5,8 +6,10 @@ import joblib
 from datetime import date
 from fetch_current import build_feature_rows_for_date
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # load model
-state = torch.load("models/nba_model.pt", map_location="cpu")
+state = torch.load(os.path.join(BASE_DIR, "models/nba_model.pt"), map_location="cpu")
 # check for number of input features
 in_features = state["out.0.weight"].shape[1]
 print("CHECKPOINT input_dim:", in_features)
@@ -30,7 +33,7 @@ model.load_state_dict(state)
 # set to eval mode for predictions
 model.eval()
 # check for same number of features inputted as trained on features
-feature_cols = pd.read_csv("models/feature_columns.csv", header=None)[0].tolist()
+feature_cols = pd.read_csv(os.path.join(BASE_DIR, "models/feature_columns.csv"), header=None)[0].tolist()
 print("PREDICT feature count (from CSV):", len(feature_cols))
 feature_cols = [c.strip() for c in feature_cols]
 
@@ -42,7 +45,7 @@ if len(feature_cols) != in_features:
     )
 
 # load same normalizing stats
-scaler = joblib.load("models/nba_scaler.joblib")
+scaler = joblib.load(os.path.join(BASE_DIR, "models/nba_scaler.joblib"))
 # get todays teams playing stats
 df_today = build_feature_rows_for_date(date.today())
 df_today.columns = df_today.columns.str.strip()
@@ -83,7 +86,7 @@ cols_to_show = [c for c in ["GAME_ID", "home_team", "away_team", "home_win_prob"
                 if c in df_today.columns]
 print(df_today[cols_to_show].sort_values("home_win_prob", ascending=False))
 
-df_today.to_csv("current_games_with_probs.csv", index=False)
+df_today.to_csv(os.path.join(BASE_DIR, "current_games_with_probs.csv"), index=False)
 print("Saved predictions to current_games_with_probs.csv")
 
 

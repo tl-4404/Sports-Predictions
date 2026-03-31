@@ -1,8 +1,11 @@
+import os
 from datetime import date
 import time
 from requests.exceptions import ReadTimeout
 import pandas as pd
 from nba_api.stats.endpoints import ScoreboardV2, LeagueDashTeamStats
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # sleep time between API calls
 SLEEP = 0.3
@@ -75,6 +78,11 @@ def fetch_team_stats(season, date_api):
         df_mt = call_leaguedash_stats(season, date_api, mt)
         dfs[mt] = df_mt
         time.sleep(SLEEP)
+    # if any measure type timed out, abort
+    if any(v is None for v in dfs.values()):
+        print("Skipping snapshot — one or more measure types failed to fetch.")
+        return None
+
     # concat all measure type's for each team into one pd
     base = dfs["Base"].copy()
     for mt in MEASURE_TYPES:
@@ -108,6 +116,8 @@ def build_feature_rows_for_date(d):
     print(f"Fetching team stats on {date_api} for season {season}...")
     # get a snapshot of all teams stats
     snapshot = fetch_team_stats(season, date_api)
+    if snapshot is None:
+        return pd.DataFrame()
     # set the index of snapshot to each teams' id, TEAM_ID
     snapshot_by_team = snapshot.set_index("TEAM_ID")
 
@@ -154,7 +164,7 @@ def main():
     print("Today's feature rows:")
     print(df_today.head())
     # create file with current games features
-    out_file = "current_games_features.csv"
+    out_file = os.path.join(BASE_DIR, "current_games_features.csv")
     df_today.to_csv(out_file, index=False)
     print(f"Saved {len(df_today)} games to {out_file}")
 

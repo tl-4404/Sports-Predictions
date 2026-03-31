@@ -182,11 +182,11 @@ with torch.no_grad():
 print(f"\nTrain accuracy: {train_acc:.1%}")
 print(f"Test accuracy:  {val_acc:.1%}")
 
-os.makedirs("models", exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
 
-torch.save(model.state_dict(), "models/nba_model.pt")
+torch.save(model.state_dict(), os.path.join(BASE_DIR, "models/nba_model.pt"))
 # save scaler for prediction (use same normalizing values as model)
-joblib.dump(scaler, "models/nba_scaler.joblib")
-pd.Series(feature_cols).to_csv("models/feature_columns.csv", index=False, header=False)
+joblib.dump(scaler, os.path.join(BASE_DIR, "models/nba_scaler.joblib"))
+pd.Series(feature_cols).to_csv(os.path.join(BASE_DIR, "models/feature_columns.csv"), index=False, header=False)
 
 print("Saved model, scaler, and feature columns.")

@@ -17,7 +17,8 @@ MEASURE_TYPES = [
     "Opponent"
 ]
 # cache paths
-CACHE_ROOT = "cache"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_ROOT = os.path.join(BASE_DIR, "cache")
 SNAPSHOT_DIR = os.path.join(CACHE_ROOT, "team_snapshots")
 # create cache
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)

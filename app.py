@@ -1,3 +1,4 @@
+import csv
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -9,6 +10,20 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "12345"
 
 DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
+NBA_PROBS_PATH = Path(__file__).resolve().parent / "nba" / "current_games_with_probs.csv"
+
+NBA_ABBR = {
+    "ATL": "Atlanta Hawks",       "BOS": "Boston Celtics",        "BKN": "Brooklyn Nets",
+    "CHA": "Charlotte Hornets",   "CHI": "Chicago Bulls",         "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks",    "DEN": "Denver Nuggets",        "DET": "Detroit Pistons",
+    "GSW": "Golden State Warriors","HOU": "Houston Rockets",      "IND": "Indiana Pacers",
+    "LAC": "Los Angeles Clippers","LAL": "Los Angeles Lakers",    "MEM": "Memphis Grizzlies",
+    "MIA": "Miami Heat",          "MIL": "Milwaukee Bucks",       "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans","NYK": "New York Knicks",       "OKC": "Oklahoma City Thunder",
+    "ORL": "Orlando Magic",       "PHI": "Philadelphia 76ers",    "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers","SAC": "Sacramento Kings",    "SAS": "San Antonio Spurs",
+    "TOR": "Toronto Raptors",     "UTA": "Utah Jazz",             "WAS": "Washington Wizards",
+}
 
 # sql helpers
 def get_db():
@@ -122,6 +137,56 @@ def load_user(user_id):
     row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return User(row) if row else None
 
+TEAM_NAME_FIXES = {
+    "LA Clippers": "Los Angeles Clippers",
+}
+
+def load_ev_picks(db):
+    if not NBA_PROBS_PATH.exists():
+        return []
+    picks = []
+    with open(NBA_PROBS_PATH, newline="") as f:
+        for row in csv.DictReader(f):
+            home_full = TEAM_NAME_FIXES.get(row.get("home_TEAM_NAME", "").strip(), row.get("home_TEAM_NAME", "").strip())
+            away_full = TEAM_NAME_FIXES.get(row.get("away_TEAM_NAME", "").strip(), row.get("away_TEAM_NAME", "").strip())
+            if not home_full or not away_full:
+                continue
+            try:
+                home_win_prob = float(row["home_win_prob"])
+            except (KeyError, ValueError):
+                continue
+            ml_rows = db.execute(
+                """SELECT p.outcome, p.odds_american, e.commence_time
+                   FROM prices p
+                   JOIN events e ON e.event_id = p.event_id
+                   WHERE e.home = ? AND e.away = ? AND p.market = 'h2h'""",
+                (home_full, away_full)
+            ).fetchall()
+            if not ml_rows:
+                continue
+            commence_time = ml_rows[0]["commence_time"]
+            ml_map = {m["outcome"]: m["odds_american"] for m in ml_rows}
+            for side, model_prob in (("Home", home_win_prob), ("Away", 1 - home_win_prob)):
+                odds = ml_map.get(side)
+                if odds is None:
+                    continue
+                implied = american_to_prob(odds)
+                edge = model_prob - implied
+                if edge > 0:
+                    picks.append({
+                        "home": home_full,
+                        "away": away_full,
+                        "team": home_full if side == "Home" else away_full,
+                        "side": side,
+                        "model_prob": model_prob,
+                        "implied_prob": implied,
+                        "edge": edge,
+                        "odds": odds,
+                        "commence_time": commence_time,
+                    })
+    picks.sort(key=lambda x: x["edge"], reverse=True)
+    return picks
+
 # card maker helpers (converts american odds to probability)
 def american_to_prob(american):
     """Convert American odds to implied probability (no vigorish removed)."""
@@ -226,7 +291,8 @@ def index():
             row["moneyline"]["away"] = ml_map.get("Away")
         games.append(row)
 
-    return render_template("index.html", games=games)
+    ev_picks = load_ev_picks(db)
+    return render_template("index.html", games=games, ev_picks=ev_picks)
 
 # register page
 @app.route("/register", methods=["GET", "POST"])
