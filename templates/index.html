@@ -35,20 +35,36 @@
       <h2 class="section-title">Model picks</h2>
       <div class="cards">
         {% for p in ev_picks %}
-          <article class="card pick">
+          <article class="card pick{% if p.suppressed %} card-suppressed{% endif %}">
             <header class="card-head">
               <span class="badge">NBA</span>
               <span class="muted">Moneyline</span>
+              {% if p.suppressed %}
+                <span class="badge badge-suppressed">Injury Risk</span>
+              {% elif p.warnings %}
+                <span class="badge badge-warn">Questionable</span>
+              {% endif %}
             </header>
             <h3 class="card-title">{{ p.team }} ML</h3>
             <p class="muted">{{ p.away }} @ {{ p.home }} · {{ p.commence_time|localtime }}</p>
+            {% if p.suppressed %}
+              <p class="injury-note injury-note-suppress">
+                Out/Doubtful: {{ p.suppressed_players | map(attribute='name') | join(', ') }} — model pick unreliable
+              </p>
+            {% elif p.warnings %}
+              <p class="injury-note injury-note-warn">
+                Questionable: {{ p.warnings | map(attribute='name') | join(', ') }}
+              </p>
+            {% endif %}
             <div class="card-metrics">
               {{ metric("Edge", "+%.1f%%"|format(p.edge * 100)) }}
               {{ metric("Model", "%.1f%%"|format(p.model_prob * 100)) }}
               {{ metric("Implied", "%.1f%%"|format(p.implied_prob * 100)) }}
             </div>
             <footer class="card-foot">
-              {% if current_user.is_authenticated %}
+              {% if p.suppressed %}
+                <span class="muted" style="font-size:13px;">Pick flagged due to injuries</span>
+              {% elif current_user.is_authenticated %}
                 <form method="post" action="{{ url_for('picks_add') }}">
                   <input type="hidden" name="league"    value="NBA">
                   <input type="hidden" name="market"    value="Moneyline">

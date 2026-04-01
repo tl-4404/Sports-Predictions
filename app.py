@@ -137,10 +137,24 @@ def load_user(user_id):
     row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return User(row) if row else None
 
+# fix name mismatch
 TEAM_NAME_FIXES = {
     "LA Clippers": "Los Angeles Clippers",
 }
 
+# get injurys
+def _parse_injury_note(note):
+    if not note or not note.strip():
+        return []
+    result = []
+    for entry in note.split(";"):
+        entry = entry.strip()
+        if ":" in entry:
+            name, status = entry.split(":", 1)
+            result.append({"name": name.strip(), "status": status.strip()})
+    return result
+
+# get all +ev picks based on model
 def load_ev_picks(db):
     if not NBA_PROBS_PATH.exists():
         return []
@@ -166,6 +180,9 @@ def load_ev_picks(db):
                 continue
             commence_time = ml_rows[0]["commence_time"]
             ml_map = {m["outcome"]: m["odds_american"] for m in ml_rows}
+            home_injuries = _parse_injury_note(row.get("home_injury_note", ""))
+            away_injuries = _parse_injury_note(row.get("away_injury_note", ""))
+
             for side, model_prob in (("Home", home_win_prob), ("Away", 1 - home_win_prob)):
                 odds = ml_map.get(side)
                 if odds is None:
@@ -173,6 +190,9 @@ def load_ev_picks(db):
                 implied = american_to_prob(odds)
                 edge = model_prob - implied
                 if edge > 0:
+                    side_injuries = home_injuries if side == "Home" else away_injuries
+                    suppressed = any(p["status"] in ("Out", "Doubtful") for p in side_injuries)
+                    warnings = [p for p in side_injuries if p["status"] == "Questionable"]
                     picks.append({
                         "home": home_full,
                         "away": away_full,
@@ -183,6 +203,9 @@ def load_ev_picks(db):
                         "edge": edge,
                         "odds": odds,
                         "commence_time": commence_time,
+                        "suppressed": suppressed,
+                        "suppressed_players": [p for p in side_injuries if p["status"] in ("Out", "Doubtful")],
+                        "warnings": warnings,
                     })
     picks.sort(key=lambda x: x["edge"], reverse=True)
     return picks
@@ -406,6 +429,46 @@ def picks_add():
     db.commit()
 
     flash(f"Added: {market} - {selection} @ {odds}", "success")
+    return redirect(url_for("my_card"))
+
+# delete a saved pick (from my-card)
+@app.route("/support", methods=["GET", "POST"])
+def picks_delete():
+    # get all pick info
+    game_id     = request.form.get("game_id", type=int)
+    league      = (request.form.get("league") or "").strip()
+    market      = (request.form.get("market") or "").strip()   
+    side        = (request.form.get("side") or "").strip()       
+    team_home   = (request.form.get("team_home") or "").strip()
+    team_away   = (request.form.get("team_away") or "").strip()
+    line_str    = (request.form.get("line") or "").strip()        
+    odds        = request.form.get("odds", type=int)     
+    stake_cents = request.form.get("stake_cents", type=int) or 0
+    notes       = request.form.get("notes", "")
+    # check for valid market & side
+    if not market or not side:
+        flash("Pick needs a market and side.", "error")
+        return redirect(url_for("index"))
+    # get selection
+    selection = ""
+    if market.lower() == "moneyline":
+        team = team_home if side.lower() == "home" else team_away
+        selection = f"{team} ML"
+    elif market.lower() == "spread":
+        team = team_home if side.lower() == "home" else team_away
+        selection = f"{team} {line_str}" if line_str else f"{team} (Spread)"
+    elif market.lower() == "total":
+        label = "Over" if side.lower() == "over" else "Under"
+        selection = f"{label} {line_str}" if line_str else label
+    else:
+        selection = f"{market} · {side}"
+    db = get_db()
+    db.execute("""
+        DELETE FROM saved_picks WHERE (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (current_user.id, game_id, league, market, selection, odds, stake_cents, notes, datetime.utcnow().isoformat()))
+    db.commit()
+    flash(f"Deleted: {market} - {selection} @ {odds}", "success")
     return redirect(url_for("my_card"))
 
 # support page

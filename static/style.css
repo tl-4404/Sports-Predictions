@@ -365,6 +365,40 @@ a {
   border-color: rgba(36, 196, 126, 0.3);
 }
 
+.badge-suppressed {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.3);
+}
+
+.badge-warn {
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.12);
+  border-color: rgba(245, 166, 35, 0.3);
+}
+
+.card-suppressed {
+  opacity: 0.6;
+  border-color: rgba(255, 107, 107, 0.3);
+}
+
+.injury-note {
+  font-size: 13px;
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.injury-note-suppress {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.injury-note-warn {
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.08);
+}
+
 /* ------------------------------------------------------------------
    11) Call-to-Action
 ------------------------------------------------------------------- */

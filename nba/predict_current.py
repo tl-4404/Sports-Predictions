@@ -5,6 +5,7 @@ import pandas as pd
 import joblib
 from datetime import date
 from fetch_current import build_feature_rows_for_date
+from injuries import get_team_injuries, injury_note
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -82,7 +83,18 @@ with torch.no_grad():
 # save and print out probs
 df_today["home_win_prob"] = probs
 
-cols_to_show = [c for c in ["GAME_ID", "home_team", "away_team", "home_win_prob"]
+# fetch injury reports for each game
+print("Fetching injury reports...")
+home_injury_notes, away_injury_notes = [], []
+for _, row in df_today.iterrows():
+    home_inj = get_team_injuries(row.get("home_TEAM_NAME", ""))
+    away_inj = get_team_injuries(row.get("away_TEAM_NAME", ""))
+    home_injury_notes.append(injury_note(home_inj))
+    away_injury_notes.append(injury_note(away_inj))
+df_today["home_injury_note"] = home_injury_notes
+df_today["away_injury_note"] = away_injury_notes
+
+cols_to_show = [c for c in ["GAME_ID", "home_TEAM_NAME", "away_TEAM_NAME", "home_win_prob", "home_injury_note", "away_injury_note"]
                 if c in df_today.columns]
 print(df_today[cols_to_show].sort_values("home_win_prob", ascending=False))
 
