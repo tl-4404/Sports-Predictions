@@ -1,6 +1,5 @@
 from pybaseball import statcast_batter
 import pandas as pd
-from datetime import date, datetime
 
 PITCH_TYPES    = ["FF", "SI", "FC", "SL", "ST", "CH", "FS", "CU", "KC"]
 MIN_SAMPLE     = 25
@@ -19,23 +18,43 @@ SWING_DESCS = {
 # zones 1-9 are in the strike zone, 11-14 are outside
 IN_ZONE = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
-# build features for batter
-# return dict of all rates for each pitch
-def get_batter_pitch_features(batter_id, date):
-    start_date_str = (date - pd.DateOffset(months=12)).strftime("%Y-%m-%d")
-    end_date_str   = date.strftime("%Y-%m-%d")
-    df = statcast_batter(start_date_str, end_date_str, batter_id)
 
-    if df.empty:
+# build features for a single batter
+# p_throws filters to only PAs against that hand ("L" or "R"); None = all PAs
+# if df is provided, slices it instead of calling the API
+def get_batter_pitch_features(batter_id, date, p_throws=None, df=None):
+    date = pd.Timestamp(date)
+
+    if df is not None:
+        # slice the pre-loaded DataFrame — no API call
+        start  = date - pd.DateOffset(months=12)
+        subset_df = df[
+            (df["batter"] == batter_id) &
+            (pd.to_datetime(df["game_date"]) >= start) &
+            (pd.to_datetime(df["game_date"]) < date)
+        ]
+    else:
+        # fetch from API
+        start_date_str = (date - pd.DateOffset(months=12)).strftime("%Y-%m-%d")
+        end_date_str   = date.strftime("%Y-%m-%d")
+        subset_df = statcast_batter(start_date_str, end_date_str, batter_id)
+
+    if subset_df.empty:
         return {}
+
+    # filter to PAs against the specified pitcher hand
+    if p_throws is not None and "p_throws" in subset_df.columns:
+        subset_df = subset_df[subset_df["p_throws"] == p_throws]
+        if subset_df.empty:
+            return {}
 
     features = {}
     for pitch in PITCH_TYPES:
-        subset = df[df["pitch_type"] == pitch]
+        subset = subset_df[subset_df["pitch_type"] == pitch]
         p = pitch.lower()
 
         if len(subset) < MIN_SAMPLE:
-            # not enough data — store None
+            # not enough data — store None, will handle at training time
             features[f"k_rate_vs_{p}"]     = None
             features[f"whiff_rate_vs_{p}"] = None
             features[f"chase_rate_vs_{p}"] = None
@@ -56,7 +75,7 @@ def get_batter_pitch_features(batter_id, date):
         ) if len(swings) > 0 else 0.0
 
         # chase rate
-        outside = subset[~subset["zone"].isin(IN_ZONE)]
+        outside        = subset[~subset["zone"].isin(IN_ZONE)]
         outside_swings = outside[outside["description"].isin(SWING_DESCS)]
         features[f"chase_rate_vs_{p}"] = round(
             len(outside_swings) / len(outside), 4
@@ -64,18 +83,22 @@ def get_batter_pitch_features(batter_id, date):
 
     return features
 
-# build features for entire lineup
-# return dict of all rates for each pitch weighted (based on batting pos)
-def get_lineup_features(lineup, date):
+
+# build position-weighted average features across the lineup
+# p_throws filters batter stats to only PAs vs that hand ("L" or "R")
+# batter_lookup: dict of {batter_id: pre-filtered DataFrame} for fast access
+# if batter_lookup is provided it takes precedence over df
+def get_lineup_features(lineup, date, p_throws=None, df=None, batter_lookup=None):
     # one accumulator per feature: {feature: [weighted_sum, total_weight]}
     accum = {
         f"{r}_vs_{p.lower()}": [0.0, 0.0]
         for p in PITCH_TYPES
         for r in RATE_TYPES
     }
-    # get rate for each pitch type (weighted)
+
     for pos, batter_id in lineup:
-        batter_features = get_batter_pitch_features(batter_id, date)
+        batter_df = batter_lookup.get(batter_id, pd.DataFrame()) if batter_lookup else df
+        batter_features = get_batter_pitch_features(batter_id, date, p_throws=p_throws, df=batter_df)
         weight = LINEUP_WEIGHTS[pos]
         for p in PITCH_TYPES:
             for r in RATE_TYPES:

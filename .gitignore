@@ -1,3 +1,6 @@
 .env
 sportsaid.db
 .venv/
+mlb/cache/
+mlb/models/
+mlb/__pycache__/
