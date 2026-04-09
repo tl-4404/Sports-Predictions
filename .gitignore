@@ -4,3 +4,6 @@ sportsaid.db
 mlb/cache/
 mlb/models/
 mlb/__pycache__/
+nba/cache/
+nba/models/
+nba/__pycache__/

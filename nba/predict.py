@@ -4,8 +4,8 @@ import torch.nn as nn
 import pandas as pd
 import joblib
 from datetime import date
-from fetch_current import build_feature_rows_for_date
-from injuries import get_team_injuries, injury_note
+from data_today import build_feature_rows_for_date
+from data_injuries import get_team_injuries, injury_note
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
