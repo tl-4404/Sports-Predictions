@@ -1,0 +1,12 @@
+[
+  {"player_name": "Ace Example", "market": "pitcher_strikeouts", "line": 6.5,
+   "book": "StubBook A", "over_odds": -115, "under_odds": -105},
+  {"player_name": "Ace Example", "market": "pitcher_strikeouts", "line": 6.5,
+   "book": "StubBook B", "over_odds": -110, "under_odds": -110},
+  {"player_name": "Ace Example", "market": "pitcher_outs", "line": 17.5,
+   "book": "StubBook A", "over_odds": -120, "under_odds": 100},
+  {"player_name": "Soft Tosser", "market": "pitcher_strikeouts", "line": 4.5,
+   "book": "StubBook A", "over_odds": 105, "under_odds": -125},
+  {"player_name": "Soft Tosser", "market": "pitcher_outs", "line": 15.5,
+   "book": "StubBook A", "over_odds": -110, "under_odds": -110}
+]

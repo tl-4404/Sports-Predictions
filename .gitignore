@@ -6,4 +6,6 @@ mlb/models/
 mlb/__pycache__/
 nba/cache/
 nba/models/
-nba/__pycache__/
+nba/__pycache__/.DS_Store
+__pycache__/
+tests/__pycache__/
