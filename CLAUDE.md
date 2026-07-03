@@ -17,7 +17,8 @@ A Flask web app (SportsAid) with two prediction pipelines:
   - `data_today.py` — serving-time data from the free MLB StatsAPI: schedule/probables/lineups, pitcher & batter per-PA rates (shrunk toward league average), box scores for grading
   - `simulator.py` — PA-level Monte Carlo: odds-ratio (log5) matchups, park/ump K factors, pitch-count leash, DP-aware outs tracking
   - `predict.py` — glue: slate → rates → sim → P(over) vs posted lines → edge/bet side/Kelly → `prop_predictions`
-  - `grade.py` — next-day grading vs box scores: outcome, PnL, CLV vs closing consensus
+  - `llm.py` — Claude lanes: `facts` (web search, qualitative only), `predict` (independent Claude P(over) per line; sees the line, never the price or the sim output), `judge` (blend sim+llm, clamped to blend ± `JUDGE_BAND`, may veto bets). Rows share the sim run_id, sources `llm`/`judge`
+  - `grade.py` — next-day grading vs box scores: outcome, PnL, CLV vs closing consensus — reported per lane (sim vs llm vs judge)
   - `build_training.py`, `data_pitcher.py`, `data_lineup.py`, `data_park.py`, `data_weather.py`, `model.py` — training-side (statcast/pybaseball; heavyweight, never imported at serving time)
   - `fixtures/` — shipped stub prop lines; `cache/` (gitignored) — training data, park factors, custom stub lines
 - `tests/test_pipeline_offline.py` — no-network end-to-end test: `python tests/test_pipeline_offline.py`
@@ -33,10 +34,11 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - `static/style.css` — all CSS (dark theme, CSS variables)
 
 ## Daily workflow (MLB)
-1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → grade yesterday
+1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → LLM lanes (if `ANTHROPIC_API_KEY` set) → grade yesterday
 2. `python run_pipeline.py --stage odds` — hourly line snapshots (line history feeds CLV)
 3. `python run_pipeline.py --stage predict` — re-run after lineups are confirmed
-4. `python app.py` — Flask dev server; home page shows the latest run's props
+4. `python run_pipeline.py --stage llm` — facts → Claude predictor → judge only
+5. `python app.py` — Flask dev server; home page shows the latest run's props (judge row wins per prop, then llm, then sim)
 
 ## Daily workflow (NBA)
 1. `python odds_client.py` — refresh odds in DB
@@ -46,6 +48,8 @@ A Flask web app (SportsAid) with two prediction pipelines:
 ## Environment (.env)
 - `SECRET_KEY` — Flask session key (required in production)
 - `ODDS_API_KEY` — The Odds API key; props need a paid plan (without it the stub fetcher runs)
+- `ANTHROPIC_API_KEY` — enables the LLM lanes (skipped quietly when absent)
+- `SPORTSAID_LLM_MODEL` — optional override, defaults to `claude-opus-4-8`
 - `ADMIN_EMAILS` — comma-separated emails allowed to view `/admin/tickets`
 
 ## Key conventions

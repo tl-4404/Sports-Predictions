@@ -8,6 +8,9 @@ requests
 numpy
 pandas
 
+# LLM lanes (facts / Claude predictor / judge) — optional at serving time
+anthropic
+
 # training only (heavyweight — not needed on the serving box)
 torch
 scikit-learn

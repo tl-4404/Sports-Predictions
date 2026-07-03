@@ -5,6 +5,7 @@ Designed so any scheduler can drive it (cron, VPS, GitHub Actions):
     python run_pipeline.py                 # full daily run for today
     python run_pipeline.py --stage odds    # just refresh prop lines
     python run_pipeline.py --stage predict # just run the simulator
+    python run_pipeline.py --stage llm     # facts -> Claude predictor -> judge
     python run_pipeline.py --stage grade   # grade yesterday's predictions
     python run_pipeline.py --date 2026-07-02
 
@@ -14,18 +15,18 @@ Suggested cron (adjust to taste):
     30 22 * * * --stage predict (re-run once lineups are confirmed)
     0 11 * * *  --stage grade (grade yesterday)
 
-The LLM lanes (facts / Claude predictor / judge) plug in here as additional
-stages once built — same run_id, same prop_predictions table with
-source='llm' / source='judge'.
+The llm stage (facts / Claude predictor / judge) needs ANTHROPIC_API_KEY and
+`pip install anthropic`; a full run skips it quietly when the key is absent.
 """
 import argparse
+import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "mlb"))
 
-STAGES = ("odds", "predict", "grade", "all")
+STAGES = ("odds", "predict", "llm", "grade", "all")
 
 
 def main():
@@ -43,6 +44,11 @@ def main():
     if args.stage in ("predict", "all"):
         _run("predict", failures,
              lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
+
+    if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
+        _run("llm", failures, lambda: __import__("llm").run_all(args.date))
+    elif args.stage == "all":
+        print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
     if args.stage in ("grade", "all"):
         grade_date = args.date if args.stage == "grade" else (

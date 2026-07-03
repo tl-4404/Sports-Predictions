@@ -236,7 +236,9 @@ def load_ev_picks(db):
     picks.sort(key=lambda x: x["edge"], reverse=True)
     return picks
 
-# latest MLB prop predictions for a date (most recent pipeline run only)
+# latest MLB prop predictions for a date (most recent pipeline run only).
+# per (player, market, line) the judge's decision wins when present,
+# then the llm lane, then the raw simulator row.
 def load_mlb_props(db, game_date=None, bets_only=False):
     game_date = game_date or date.today().isoformat()
     try:
@@ -248,18 +250,43 @@ def load_mlb_props(db, game_date=None, bets_only=False):
         return []  # prop tables not created yet — pipeline never ran
     if not run or not run["r"]:
         return []
-    q = """SELECT * FROM prop_predictions
-           WHERE game_date = ? AND run_id = ? AND source = 'sim'"""
-    if bets_only:
-        q += " AND bet_side IS NOT NULL"
-    rows = db.execute(q + " ORDER BY COALESCE(MAX(edge_over, edge_under), -1) DESC",
-                      (game_date, run["r"])).fetchall()
-    props = []
+    rows = db.execute(
+        """SELECT * FROM prop_predictions
+           WHERE game_date = ? AND run_id = ?""",
+        (game_date, run["r"]),
+    ).fetchall()
+
+    rank = {"sim": 0, "llm": 1, "judge": 2}
+    best = {}
+    sim_means = {}
     for r in rows:
+        key = (r["player_name"], r["market"], r["line"])
+        if r["source"] == "sim" and r["mean"] is not None:
+            sim_means[key] = r["mean"]
+        cur = best.get(key)
+        if cur is None or rank.get(r["source"], -1) > rank.get(cur["source"], -1):
+            best[key] = r
+
+    props = []
+    for key, r in best.items():
+        if bets_only and not r["bet_side"]:
+            continue
         d = dict(r)
         d["market_label"] = "Strikeouts" if r["market"] == "pitcher_strikeouts" else "Pitcher Outs"
         d["edge"] = max(r["edge_over"] or 0, r["edge_under"] or 0) if r["edge_over"] is not None else None
+        if d.get("mean") is None:
+            d["mean"] = sim_means.get(key)  # judge/llm rows show the sim mean
+        # judge/llm rationale is stored as JSON — pull the human text out
+        if d.get("rationale"):
+            try:
+                import json as _json
+                meta = _json.loads(d["rationale"])
+                d["rationale_text"] = meta.get("rationale") or ""
+                d["judge_action"] = meta.get("action")
+            except (ValueError, TypeError):
+                d["rationale_text"] = d["rationale"]
         props.append(d)
+    props.sort(key=lambda x: x["edge"] if x["edge"] is not None else -1, reverse=True)
     return props
 
 # card maker helpers (converts american odds to probability)

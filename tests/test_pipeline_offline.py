@@ -147,6 +147,128 @@ check("clv computed for bets", len(clvs) == len(bets), f"({len(clvs)})")
 check("innings_to_outs 5.2 = 17", data_today.innings_to_outs("5.2") == 17)
 check("innings_to_outs 7.0 = 21", data_today.innings_to_outs("7.0") == 21)
 
+# ── LLM lanes with a fake Anthropic client ───────────────────────────────────
+print("llm lanes (fake client):")
+import json as _json
+import llm
+
+
+class FakeBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.content = [FakeBlock(text)]
+
+
+class FakeMessages:
+    def __init__(self, outer):
+        self.outer = outer
+
+    def create(self, **kwargs):
+        self.outer.calls.append(kwargs)
+        if any(t.get("name") == "web_search" for t in kwargs.get("tools", [])):
+            # facts call: note wrapped in prose to exercise lenient parsing
+            return FakeResponse(
+                'Here is what I found:\n```json\n'
+                + _json.dumps({
+                    "pitchers": [
+                        {"name": "Ace Example", "flags": [], "outlook": "neutral"},
+                        {"name": "Soft Tosser",
+                         "flags": ["manager hinted at a ~75 pitch limit"],
+                         "outlook": "negative"},
+                    ],
+                    "game_notes": ["roof closed"],
+                    "sources": ["beat writer"],
+                }) + "\n```")
+        schema = kwargs.get("output_config", {}).get("format", {}).get("schema", {})
+        props = schema.get("properties", {})
+        if "props" in props:
+            # predictor call: parse requested lines out of the prompt
+            prompt = kwargs["messages"][0]["content"]
+            out = []
+            for m in __import__("re").finditer(r"- (\w+): line ([\d.]+)", prompt):
+                out.append({"market": m.group(1), "line": float(m.group(2)),
+                            "p_over": 0.62, "confidence": 0.5,
+                            "rationale": "test rationale"})
+            return FakeResponse(_json.dumps({"props": out}))
+        # judge call: extreme final_p_over (tests clamping) + one veto
+        prompt = kwargs["messages"][0]["content"]
+        decisions = []
+        for m in __import__("re").finditer(
+                r"- (\w+) line ([\d.]+): sim ([\d.]+)", prompt):
+            market, line = m.group(1), float(m.group(2))
+            decisions.append({
+                "market": market, "line": line,
+                "final_p_over": 0.99,           # absurd — must be clamped
+                "action": "pass" if market == "pitcher_outs" else "bet",
+                "rationale": "test judge",
+            })
+        return FakeResponse(_json.dumps({"decisions": decisions}))
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = []
+        self.messages = FakeMessages(self)
+
+
+fake = FakeClient()
+llm.set_client(fake)
+
+n_facts = llm.facts_stage("2026-07-01")
+check("facts researched per game", n_facts == 1)
+conn = db.connect()
+facts_row = conn.execute("SELECT facts_json FROM llm_facts").fetchone()
+check("facts stored + lenient-parsed",
+      facts_row and "pitch limit" in facts_row["facts_json"])
+
+n_llm = llm.llm_predict_stage("2026-07-01")
+check("llm predictions logged", n_llm == 4, f"(n={n_llm})")
+llm_rows = conn.execute(
+    "SELECT * FROM prop_predictions WHERE source='llm'").fetchall()
+check("llm rows carry edge vs market",
+      all(r["market_p_over"] is not None for r in llm_rows))
+check("llm run_id matches sim run",
+      {r["run_id"] for r in llm_rows} ==
+      {r["run_id"] for r in conn.execute(
+          "SELECT run_id FROM prop_predictions WHERE source='sim'").fetchall()})
+
+n_judge = llm.judge_stage("2026-07-01")
+check("judge decisions logged", n_judge == 4, f"(n={n_judge})")
+judge_rows = conn.execute(
+    "SELECT * FROM prop_predictions WHERE source='judge'").fetchall()
+for jr in judge_rows:
+    sim_r = conn.execute(
+        """SELECT p_over FROM prop_predictions
+           WHERE source='sim' AND player_name=? AND market=? AND line=?""",
+        (jr["player_name"], jr["market"], jr["line"])).fetchone()
+    llm_r = conn.execute(
+        """SELECT p_over FROM prop_predictions
+           WHERE source='llm' AND player_name=? AND market=? AND line=?""",
+        (jr["player_name"], jr["market"], jr["line"])).fetchone()
+    blend = llm.W_SIM * sim_r["p_over"] + (1 - llm.W_SIM) * llm_r["p_over"]
+    check(f"judge clamped ({jr['player_name'][:4]} {jr['market'][8:]} {jr['line']})",
+          abs(jr["p_over"] - blend) <= llm.JUDGE_BAND + 1e-9,
+          f"(p={jr['p_over']:.3f}, blend={blend:.3f})")
+vetoed = [r for r in judge_rows if r["market"] == "pitcher_outs"]
+check("veto suppresses bet", all(r["bet_side"] is None for r in vetoed))
+meta = _json.loads(vetoed[0]["rationale"])
+check("judge rationale stored", meta["action"] == "pass" and "blend" in meta)
+
+# grade the judge/llm rows too (sim rows already graded above)
+n_graded2 = grade.grade_date("2026-07-01")
+check("llm+judge rows graded", n_graded2 == n_llm + n_judge, f"({n_graded2})")
+per_source = conn.execute(
+    """SELECT p.source, COUNT(*) n FROM prop_predictions p
+       JOIN prop_results r ON r.prediction_id = p.id GROUP BY p.source"""
+).fetchall()
+check("all three lanes graded", {r["source"] for r in per_source} ==
+      {"sim", "llm", "judge"})
+
 conn.close()
 
 print()
