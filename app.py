@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -259,8 +260,10 @@ def load_mlb_props(db, game_date=None, bets_only=False):
     rank = {"sim": 0, "llm": 1, "judge": 2}
     best = {}
     sim_means = {}
+    lane_probs = {}   # key -> {source: p_over} for the three-way comparison
     for r in rows:
         key = (r["player_name"], r["market"], r["line"])
+        lane_probs.setdefault(key, {})[r["source"]] = r["p_over"]
         if r["source"] == "sim" and r["mean"] is not None:
             sim_means[key] = r["mean"]
         cur = best.get(key)
@@ -274,13 +277,14 @@ def load_mlb_props(db, game_date=None, bets_only=False):
         d = dict(r)
         d["market_label"] = "Strikeouts" if r["market"] == "pitcher_strikeouts" else "Pitcher Outs"
         d["edge"] = max(r["edge_over"] or 0, r["edge_under"] or 0) if r["edge_over"] is not None else None
+        d["lane"] = r["source"]                       # which lane made the call
+        d["lanes"] = lane_probs.get(key, {})          # sim/llm/judge P(over) side by side
         if d.get("mean") is None:
-            d["mean"] = sim_means.get(key)  # judge/llm rows show the sim mean
+            d["mean"] = sim_means.get(key)            # judge/llm rows show the sim mean
         # judge/llm rationale is stored as JSON — pull the human text out
         if d.get("rationale"):
             try:
-                import json as _json
-                meta = _json.loads(d["rationale"])
+                meta = json.loads(d["rationale"])
                 d["rationale_text"] = meta.get("rationale") or ""
                 d["judge_action"] = meta.get("action")
             except (ValueError, TypeError):
@@ -288,6 +292,48 @@ def load_mlb_props(db, game_date=None, bets_only=False):
         props.append(d)
     props.sort(key=lambda x: x["edge"] if x["edge"] is not None else -1, reverse=True)
     return props
+
+
+# per-lane real-money scorecard over a trailing window — which lane to trust.
+# ROI is profit (already at each bet's logged Kelly stake) divided by total
+# staked; CLV is the honest "did we beat the close" signal.
+def load_lane_scoreboard(db, days=14):
+    since = (date.today() - timedelta(days=days)).isoformat()
+    try:
+        rows = db.execute(
+            """SELECT p.source,
+                      COUNT(*)                                    AS graded,
+                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN 1 ELSE 0 END) AS bets,
+                      SUM(COALESCE(r.bet_won, 0))                 AS wins,
+                      SUM(COALESCE(r.profit_units, 0))            AS pnl,
+                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN COALESCE(p.kelly_frac,0) ELSE 0 END) AS staked,
+                      AVG(r.clv)                                  AS avg_clv,
+                      AVG(CASE WHEN r.clv IS NOT NULL AND r.clv > 0 THEN 1.0
+                               WHEN r.clv IS NOT NULL THEN 0.0 END) AS clv_beat_rate
+               FROM prop_predictions p
+               JOIN prop_results r ON r.prediction_id = p.id
+               WHERE p.game_date >= ?
+               GROUP BY p.source""",
+            (since,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    order = {"judge": 0, "sim": 1, "llm": 2}
+    board = []
+    for r in rows:
+        bets = r["bets"] or 0
+        board.append({
+            "source": r["source"],
+            "bets": bets,
+            "wins": r["wins"] or 0,
+            "hit_rate": (r["wins"] / bets) if bets else None,
+            "pnl": r["pnl"] or 0.0,
+            "roi": (r["pnl"] / r["staked"]) if (r["staked"] or 0) > 0 else None,
+            "avg_clv": r["avg_clv"],
+            "clv_beat_rate": r["clv_beat_rate"],
+        })
+    board.sort(key=lambda x: order.get(x["source"], 9))
+    return board
 
 # card maker helpers (converts american odds to probability)
 def american_to_prob(american):
@@ -405,11 +451,13 @@ def index():
 
     ev_picks = load_ev_picks(db)
     mlb_props = load_mlb_props(db)
+    mlb_scoreboard = load_lane_scoreboard(db)
     return render_template(
         "index.html",
         games=games,
         ev_picks=ev_picks,
         mlb_props=mlb_props,
+        mlb_scoreboard=mlb_scoreboard,
         leagues=leagues,
         active_league=active_league,
         query=query,
