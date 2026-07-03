@@ -294,6 +294,37 @@ def load_mlb_props(db, game_date=None, bets_only=False):
     return props
 
 
+# PrizePicks is a separate surface: pick'em projections (no two-way odds) scored
+# off the simulator distribution vs the parlay break-even. Kept apart from the
+# sportsbook board above so the two are never conflated.
+def load_prizepicks_board(db, game_date=None, playable_only=False):
+    game_date = game_date or date.today().isoformat()
+    try:
+        run = db.execute(
+            "SELECT MAX(run_id) r FROM prizepicks_picks WHERE game_date = ?",
+            (game_date,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return []  # PrizePicks lane never ran
+    if not run or not run["r"]:
+        return []
+    rows = db.execute(
+        """SELECT * FROM prizepicks_picks
+           WHERE game_date = ? AND run_id = ?
+           ORDER BY edge DESC""",
+        (game_date, run["r"]),
+    ).fetchall()
+    picks = []
+    for r in rows:
+        if playable_only and not r["playable"]:
+            continue
+        d = dict(r)
+        d["market_label"] = ("Strikeouts" if r["market"] == "pitcher_strikeouts"
+                             else "Pitcher Outs")
+        picks.append(d)
+    return picks
+
+
 # per-lane real-money scorecard over a trailing window — which lane to trust.
 # ROI is profit (already at each bet's logged Kelly stake) divided by total
 # staked; CLV is the honest "did we beat the close" signal.
@@ -451,12 +482,14 @@ def index():
 
     ev_picks = load_ev_picks(db)
     mlb_props = load_mlb_props(db)
+    prizepicks_picks = load_prizepicks_board(db)
     mlb_scoreboard = load_lane_scoreboard(db)
     return render_template(
         "index.html",
         games=games,
         ev_picks=ev_picks,
         mlb_props=mlb_props,
+        prizepicks_picks=prizepicks_picks,
         mlb_scoreboard=mlb_scoreboard,
         leagues=leagues,
         active_league=active_league,

@@ -54,6 +54,8 @@ A Flask web app (SportsAid) with two prediction pipelines:
 ## Environment (.env)
 - `SECRET_KEY` — Flask session key (required in production)
 - `ODDS_API_KEY` — The Odds API key; props need a paid plan (without it the stub fetcher runs)
+- `ODDS_SOURCE` — odds-source toggle: `oddsapi` | `scraper` | `stub` (unset ⇒ oddsapi when `ODDS_API_KEY` is set, else stub). `scraper` uses the free DraftKings scraper (`SportsbookScraperFetcher`); override its drifting ids via `DK_BASE`/`DK_MLB_EVENTGROUP`/`DK_PITCHER_CATEGORIES`
+- `PRIZEPICKS_LIVE` — opt in to live PrizePicks scraping (else the offline stub runs); `PRIZEPICKS_MLB_LEAGUE_ID`/`PRIZEPICKS_URL` override the endpoint
 - `ANTHROPIC_API_KEY` — enables the LLM lanes (skipped quietly when absent)
 - `SPORTSAID_LLM_MODEL` — optional override, defaults to `claude-opus-4-8`
 - `ADMIN_EMAILS` — comma-separated emails allowed to view `/admin/tickets`
