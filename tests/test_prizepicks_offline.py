@@ -141,6 +141,50 @@ check("re-grade grades nothing new", pp.grade_date(DATE) == 0)
 
 conn.close()
 
+# ── live JSON:API parser (offline payload — parity with the DK/FD parsers) ────
+print("prizepicks live parser:")
+
+PP_PAYLOAD = {
+    "data": [
+        {"id": "proj-1", "type": "projection", "attributes": {
+            "stat_type": "Pitcher Strikeouts", "line_score": 6.5,
+            "start_time": "2026-07-01T19:05:00-04:00"},
+         "relationships": {"new_player": {"data": {"id": "np-1"}}}},
+        {"id": "proj-2", "type": "projection", "attributes": {
+            "stat_type": "Pitching Outs", "line_score": 16.5,
+            "start_time": "2026-07-01T19:05:00-04:00"},
+         "relationships": {"new_player": {"data": {"id": "np-1"}}}},
+        {"id": "proj-3", "type": "projection", "attributes": {  # other day
+            "stat_type": "Pitcher Strikeouts", "line_score": 5.5,
+            "start_time": "2026-07-02T13:10:00-04:00"},
+         "relationships": {"new_player": {"data": {"id": "np-2"}}}},
+        {"id": "proj-4", "type": "projection", "attributes": {  # unmapped stat
+            "stat_type": "Hits Allowed", "line_score": 4.5,
+            "start_time": "2026-07-01T19:05:00-04:00"},
+         "relationships": {"new_player": {"data": {"id": "np-1"}}}},
+    ],
+    "included": [
+        {"id": "np-1", "type": "new_player", "attributes": {"name": "Ace Example"}},
+        {"id": "np-2", "type": "new_player", "attributes": {"name": "Tomorrow Guy"}},
+    ],
+}
+
+parsed = pp._parse_projections(PP_PAYLOAD, DATE, "2026-07-01T12:00:00Z")
+check("parsed today's mapped projections (2)", len(parsed) == 2, f"({len(parsed)})")
+pk = {r["market"]: r for r in parsed}
+check("strikeouts projection parsed",
+      "pitcher_strikeouts" in pk
+      and pk["pitcher_strikeouts"]["player_name"] == "Ace Example"
+      and pk["pitcher_strikeouts"]["line"] == 6.5)
+check("player name resolved from included sidecar",
+      all(r["player_name"] == "Ace Example" for r in parsed))
+check("projection_id carried through",
+      pk["pitcher_strikeouts"]["projection_id"] == "proj-1")
+check("other-day projection excluded",
+      all(r["player_name"] != "Tomorrow Guy" for r in parsed))
+check("unmapped stat_type excluded",
+      all(r["market"] in ("pitcher_strikeouts", "pitcher_outs") for r in parsed))
+
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} checks: {FAILURES}")
