@@ -6,6 +6,7 @@ Covers: break-even/EV math, schema, stub projection ingestion, evaluation off
 the simulator distribution (P(over) at the PrizePicks line), playable flagging,
 and next-day grading vs box scores. StatsAPI is monkeypatched with fixtures.
 """
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -15,6 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
 import db
 import data_today
 import prizepicks as pp
+
+# Hermetic: force offline stubs regardless of the user's .env (a real .env may
+# set PRIZEPICKS_LIVE=1, which would send this "offline" test to the network).
+# Must run AFTER the imports above — they call load_dotenv() at import time.
+for _k in ("PRIZEPICKS_LIVE", "ODDS_SOURCE", "ODDS_API_KEY"):
+    os.environ.pop(_k, None)
 
 FAILURES = []
 

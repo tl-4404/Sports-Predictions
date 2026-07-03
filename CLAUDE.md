@@ -42,6 +42,9 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - `templates/` — Jinja2 HTML templates
 - `static/style.css` — all CSS (dark theme, CSS variables)
 
+## Quick start
+`make setup` (creates `.venv`, installs serving deps, scaffolds `.env`, runs the preflight) → edit `.env` (at least `ANTHROPIC_API_KEY`; `ODDS_SOURCE=scraper` is the free default) → `make doctor` to confirm readiness → `make run` then `make web`. `make help` lists all targets; `make install-training` adds the heavyweight deps (torch/pybaseball) only needed to build caches or train NBA.
+
 ## Daily workflow (MLB)
 0. `python run_pipeline.py --stage doctor` — preflight: confirms StatsAPI, the odds source, the LLM key, PrizePicks, and caches are ready before a live run
 1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → LLM lanes (if `ANTHROPIC_API_KEY` set) → PrizePicks lane → grade yesterday
