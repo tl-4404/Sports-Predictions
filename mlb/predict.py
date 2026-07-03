@@ -11,54 +11,21 @@ pipeline stays observable end-to-end — those rows carry no book/edge/bet.
 
 Run: python mlb/predict.py [YYYY-MM-DD]
 """
-import json
 import sys
 from datetime import date, datetime, timezone
-from pathlib import Path
 
 import db
 import data_today
 import simulator
+from factors import park_k_factor, ump_k_factor
 from betting_math import consensus_p_over, kelly_fraction
-
-BASE_DIR = Path(__file__).resolve().parent
-PARK_FACTORS_PATH = BASE_DIR / "cache" / "park_factors.json"
 
 MIN_EDGE = 0.03      # minimum edge vs de-vigged consensus before we call a bet
 N_SIMS = 10000
 
-# full team name (StatsAPI) → statcast/park-factor abbreviation
-TEAM_ABBR = {
-    "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL",
-    "Baltimore Orioles": "BAL", "Boston Red Sox": "BOS",
-    "Chicago Cubs": "CHC", "Chicago White Sox": "CHW",
-    "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE",
-    "Colorado Rockies": "COL", "Detroit Tigers": "DET",
-    "Houston Astros": "HOU", "Kansas City Royals": "KC",
-    "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD",
-    "Miami Marlins": "MIA", "Milwaukee Brewers": "MIL",
-    "Minnesota Twins": "MIN", "New York Mets": "NYM",
-    "New York Yankees": "NYY", "Athletics": "OAK",
-    "Oakland Athletics": "OAK", "Philadelphia Phillies": "PHI",
-    "Pittsburgh Pirates": "PIT", "San Diego Padres": "SD",
-    "Seattle Mariners": "SEA", "San Francisco Giants": "SF",
-    "St. Louis Cardinals": "STL", "Tampa Bay Rays": "TB",
-    "Texas Rangers": "TEX", "Toronto Blue Jays": "TOR",
-    "Washington Nationals": "WSH",
-}
-
 
 def _norm(name):
     return "".join(ch for ch in (name or "").lower() if ch.isalpha())
-
-
-def _park_k_factor(home_team_name):
-    if not PARK_FACTORS_PATH.exists():
-        return 1.0
-    with open(PARK_FACTORS_PATH) as f:
-        factors = json.load(f)
-    abbr = TEAM_ABBR.get(home_team_name, "")
-    return (factors.get(abbr) or {}).get("k_factor", 1.0)
 
 
 def _lineup_rates(batter_ids, pitcher_hand):
@@ -89,6 +56,11 @@ def predict_date(game_date=None, n_sims=N_SIMS):
     n_logged = 0
 
     for g in games:
+        # park & home-plate-umpire K factors are shared by both starters
+        k_park = park_k_factor(g["home_team"])
+        ump_name = data_today.get_home_plate_umpire(g["game_pk"])
+        k_ump = ump_k_factor(ump_name)
+
         for side in ("home", "away"):
             pitcher = g[f"{side}_pitcher"]
             if not pitcher:
@@ -97,12 +69,12 @@ def predict_date(game_date=None, n_sims=N_SIMS):
             try:
                 profile = data_today.get_pitcher_profile(pitcher["id"])
                 lineup, confirmed = _lineup_rates(opp_lineup_ids, pitcher["hand"])
-                k_park = _park_k_factor(g["home_team"])
                 ks, outs = simulator.simulate_starter(
                     {"k": profile["k"], "bb": profile["bb"], "hit": profile["hit"]},
                     lineup,
                     recent_pitch_counts=profile["recent_pitch_counts"],
                     k_park=k_park,
+                    k_ump=k_ump,
                     n_sims=n_sims,
                 )
             except Exception as e:
@@ -115,7 +87,8 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                 n_logged += _log_market(
                     conn, run_id, game_date, g, pitcher, market, arr, rows)
             print(f"[predict] {pitcher['name']} ({side}, "
-                  f"lineup={'posted' if confirmed else 'league-avg'}): "
+                  f"lineup={'posted' if confirmed else 'league-avg'}, "
+                  f"ump={ump_name or 'TBD'} k={k_ump:.2f}): "
                   f"K mean {ks.mean():.2f}, outs mean {outs.mean():.2f}")
 
     print(f"[predict] logged {n_logged} predictions")

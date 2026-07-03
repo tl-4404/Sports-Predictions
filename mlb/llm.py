@@ -26,6 +26,7 @@ from datetime import date
 
 import db
 import data_today
+from factors import park_k_factor, ump_k_factor
 from betting_math import consensus_p_over, kelly_fraction
 
 MODEL = os.getenv("SPORTSAID_LLM_MODEL", "claude-opus-4-8")
@@ -231,7 +232,9 @@ PREDICT_PROMPT = """{game_date}: {pitcher} ({hand}HP, {team_side} starter) faces
 Pitcher season per-PA rates (shrunk to league avg): K {pk:.3f}, BB {pbb:.3f}, hit {phit:.3f}
 Recent start pitch counts: {pitch_counts}
 Opposing lineup per-PA K rates vs {hand}HP (slots 1-9): {lineup_ks}
-(league avg K rate: 0.223)  Park K factor: {k_park:.2f}
+(league avg K rate: 0.223)
+Park K factor: {k_park:.2f}   Home-plate umpire K factor: {k_ump:.2f} ({ump_name})
+(a K factor above 1.0 means more strikeouts than average)
 Lineup status: {lineup_status}
 
 Recent news flags for this pitcher: {flags}
@@ -265,6 +268,9 @@ def llm_predict_stage(game_date=None, run_id=None):
     n = 0
     for g in data_today.get_schedule(game_date):
         facts = _facts_for(conn, game_date, g["game_pk"])
+        k_park = park_k_factor(g["home_team"])
+        ump_name = data_today.get_home_plate_umpire(g["game_pk"])
+        k_ump = ump_k_factor(ump_name)
         for side in ("home", "away"):
             pitcher = g[f"{side}_pitcher"]
             if not pitcher:
@@ -275,7 +281,8 @@ def llm_predict_stage(game_date=None, run_id=None):
             try:
                 n += _llm_predict_pitcher(
                     conn, client, run_id, game_date, g, side, pitcher,
-                    line_rows, _pitcher_flags(facts, pitcher["name"]))
+                    line_rows, _pitcher_flags(facts, pitcher["name"]),
+                    k_park, k_ump, ump_name)
             except Exception as e:
                 print(f"[llm.predict] {pitcher['name']}: {e}")
     print(f"[llm.predict] logged {n} predictions")
@@ -284,7 +291,7 @@ def llm_predict_stage(game_date=None, run_id=None):
 
 
 def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
-                         line_rows, flags):
+                         line_rows, flags, k_park, k_ump, ump_name):
     profile = data_today.get_pitcher_profile(pitcher["id"])
     opp_ids = game["away_lineup"] if side == "home" else game["home_lineup"]
     if opp_ids:
@@ -303,7 +310,8 @@ def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
         game_date=game_date, pitcher=pitcher["name"], hand=pitcher["hand"],
         team_side=side, pk=profile["k"], pbb=profile["bb"], phit=profile["hit"],
         pitch_counts=profile["recent_pitch_counts"] or "unknown",
-        lineup_ks=lineup_ks, k_park=1.0, lineup_status=lineup_status,
+        lineup_ks=lineup_ks, k_park=k_park, k_ump=k_ump,
+        ump_name=ump_name or "TBD", lineup_status=lineup_status,
         flags=flags["flags"] or "none found",
         game_notes=flags["game_notes"] or "none",
         lines_block=lines_block,

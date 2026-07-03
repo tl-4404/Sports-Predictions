@@ -197,6 +197,18 @@ def _hitting_rates(data, prior_weight=100):
     }
 
 
+def get_home_plate_umpire(game_pk):
+    """Home-plate umpire full name from the box score, or None if unassigned."""
+    try:
+        box = _get(f"/game/{game_pk}/boxscore")
+    except requests.RequestException:
+        return None
+    for off in box.get("officials", []):
+        if off.get("officialType") == "Home Plate":
+            return (off.get("official") or {}).get("fullName")
+    return None
+
+
 def get_starter_actuals(game_pk):
     """Actual Ks and outs for both starters from the box score.
 

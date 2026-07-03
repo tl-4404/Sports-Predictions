@@ -66,6 +66,37 @@ check("prob_over sums to 1", abs(p_over + p_under - 1.0) < 1e-9)
 check("monotonic in line",
       simulator.prob_over(ks, 3.5)[0] > simulator.prob_over(ks, 7.5)[0])
 
+# umpire/park K factor pushes strikeouts the right direction
+ks_hot_ump, _ = simulator.simulate_starter(avg, lineup, [92, 88, 95],
+                                           k_ump=1.15, n_sims=4000, seed=7)
+check("high-K umpire raises K mean", ks_hot_ump.mean() > ks.mean() + 0.2,
+      f"({ks_hot_ump.mean():.2f} vs {ks.mean():.2f})")
+ks_cold, _ = simulator.simulate_starter(avg, lineup, [92, 88, 95],
+                                        k_ump=0.85, n_sims=4000, seed=7)
+check("low-K umpire lowers K mean", ks_cold.mean() < ks.mean() - 0.2,
+      f"({ks_cold.mean():.2f} vs {ks.mean():.2f})")
+
+# ── factors: park + umpire cache lookup ──────────────────────────────────────
+print("factors:")
+import json as _json0
+import factors as factors_mod
+_fc_dir = Path(tempfile.mkdtemp())
+factors_mod.UMP_PATH = _fc_dir / "ump_factors.json"
+factors_mod.PARK_PATH = _fc_dir / "park_factors.json"
+with open(factors_mod.UMP_PATH, "w") as f:
+    _json0.dump({"Ángel Hernández": {"k_factor": 1.12, "games": 100},
+                 "Pat Hoberg": {"k_factor": 0.94, "games": 100}}, f)
+with open(factors_mod.PARK_PATH, "w") as f:
+    _json0.dump({"COL": {"k_factor": 0.90}, "NYM": {"k_factor": 1.03}}, f)
+factors_mod._reset_caches()
+check("ump factor looked up", factors_mod.ump_k_factor("Pat Hoberg") == 0.94)
+check("ump factor accent/spacing-insensitive",
+      factors_mod.ump_k_factor("Angel Hernandez") == 1.12)
+check("unknown ump -> neutral 1.0", factors_mod.ump_k_factor("Nobody") == 1.0)
+check("None ump -> neutral 1.0", factors_mod.ump_k_factor(None) == 1.0)
+check("park factor by full name", factors_mod.park_k_factor("Colorado Rockies") == 0.90)
+check("unknown park -> neutral 1.0", factors_mod.park_k_factor("Narnia Ninjas") == 1.0)
+
 # ── pipeline end-to-end on a temp DB with mocked StatsAPI ────────────────────
 print("pipeline (temp db, mocked network):")
 tmp = tempfile.mkdtemp()
@@ -270,6 +301,26 @@ check("all three lanes graded", {r["source"] for r in per_source} ==
       {"sim", "llm", "judge"})
 
 conn.close()
+
+# ── backtest engine (synthetic self-consistency) ─────────────────────────────
+print("backtest:")
+import backtest
+
+data = backtest.synthetic_dataset(n_games=140, seed=3)
+records = backtest.run_backtest(data, n_sims=800, seed=0)
+_, ece = backtest.calibration(records)
+ll = backtest.log_loss(records)
+check("backtest produces scored props", len(records) > 1000, f"({len(records)})")
+check("model calibrates on its own process (ECE<0.06)", ece < 0.06, f"(ece={ece:.4f})")
+check("log-loss beats coinflip", ll < 0.69, f"(ll={ll:.4f})")
+
+# flat -110 market → model's true edges must be profitable
+data_fm = backtest.synthetic_dataset(n_games=140, seed=3, flat_market=True)
+rec_fm = backtest.run_backtest(data_fm, n_sims=800, seed=0)
+summ = backtest.betting_summary(rec_fm)
+check("flat-market bets flagged", summ["n_bets"] > 100, f"({summ['n_bets']})")
+check("flat-market ROI positive", summ["roi_flat"] > 0.05, f"(roi={summ['roi_flat']:+.3f})")
+check("report renders", "BACKTEST REPORT" in backtest.report(rec_fm))
 
 print()
 if FAILURES:
