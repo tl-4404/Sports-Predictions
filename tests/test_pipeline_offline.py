@@ -302,6 +302,37 @@ check("all three lanes graded", {r["source"] for r in per_source} ==
 
 conn.close()
 
+# ── form: CSW-blended K rate + velocity trend factor ─────────────────────────
+print("form:")
+import form as form_mod
+_form_dir = Path(tempfile.mkdtemp())
+form_mod.FORM_PATH = _form_dir / "pitcher_form.json"
+with open(form_mod.FORM_PATH, "w") as f:
+    _json0.dump({
+        "111": {"csw_pct": 0.34, "k_implied": 0.30, "k_rate": 0.28,
+                "velo_baseline": 96.0, "velo_recent": 94.0},   # velo dip
+        "222": {"csw_pct": 0.24, "k_implied": 0.16, "k_rate": 0.16,
+                "velo_baseline": 92.0, "velo_recent": 93.5},   # velo up
+    }, f)
+form_mod._reset_cache()
+# blend: 0.4*0.30 + 0.6*0.20 = 0.24
+check("blended K rate uses CSW implied",
+      abs(form_mod.blended_k_rate(111, 0.20) - 0.24) < 1e-9,
+      f"({form_mod.blended_k_rate(111, 0.20):.4f})")
+check("no form -> season rate unchanged", form_mod.blended_k_rate(999, 0.25) == 0.25)
+check("velo dip lowers K factor", form_mod.velo_k_factor(111) < 1.0,
+      f"({form_mod.velo_k_factor(111):.4f})")
+check("velo up raises K factor", form_mod.velo_k_factor(222) > 1.0,
+      f"({form_mod.velo_k_factor(222):.4f})")
+check("velo factor clamped", 0.85 <= form_mod.velo_k_factor(111) <= 1.10)
+check("no form -> neutral velo factor", form_mod.velo_k_factor(999) == 1.0)
+check("form_summary renders", "CSW%" in (form_mod.form_summary(111) or ""))
+check("simulator k_form direction",
+      simulator.simulate_starter(avg, lineup, [92, 88, 95], k_form=1.10,
+                                 n_sims=4000, seed=7)[0].mean()
+      > simulator.simulate_starter(avg, lineup, [92, 88, 95], k_form=0.90,
+                                   n_sims=4000, seed=7)[0].mean())
+
 # ── backtest engine (synthetic self-consistency) ─────────────────────────────
 print("backtest:")
 import backtest
@@ -321,6 +352,42 @@ summ = backtest.betting_summary(rec_fm)
 check("flat-market bets flagged", summ["n_bets"] > 100, f"({summ['n_bets']})")
 check("flat-market ROI positive", summ["roi_flat"] > 0.05, f"(roi={summ['roi_flat']:+.3f})")
 check("report renders", "BACKTEST REPORT" in backtest.report(rec_fm))
+
+# ── odds-archive merge → real ROI/CLV ────────────────────────────────────────
+print("odds archive:")
+import csv as _csv
+_odds_dir = Path(tempfile.mkdtemp())
+_odds_csv = _odds_dir / "odds.csv"
+with open(_odds_csv, "w", newline="") as f:
+    w = _csv.writer(f)
+    w.writerow(["game_date", "player_name", "market", "line", "over_odds",
+                "under_odds", "closing_over_odds", "closing_under_odds"])
+    w.writerow(["2024-06-01", "Ace Example", "strikeouts", 6.5, -110, -110, -140, 115])
+    w.writerow(["2024-06-01", "Soft Tosser", "Ks", 4.5, 100, -120, -105, -115])
+mini = [
+    {"game_date": "2024-06-01", "pitcher_name": "Ace Example",
+     "pitcher": {"k": 0.30, "bb": 0.06, "hit": 0.19},
+     "lineup": [{"k": 0.22, "bb": 0.08, "hit": 0.21}] * 9,
+     "recent_pitch_counts": [98, 95, 101], "k_park": 1.0, "k_ump": 1.0,
+     "actual_ks": 8, "actual_outs": 19, "lines": []},
+    {"game_date": "2024-06-01", "pitcher_name": "Soft Tosser",
+     "pitcher": {"k": 0.16, "bb": 0.09, "hit": 0.24},
+     "lineup": [{"k": 0.22, "bb": 0.08, "hit": 0.21}] * 9,
+     "recent_pitch_counts": [80, 78, 82], "k_park": 1.0, "k_ump": 1.0,
+     "actual_ks": 3, "actual_outs": 14, "lines": []},
+]
+arch = backtest.load_odds_archive(str(_odds_csv))
+check("archive market aliases normalized",
+      all(any(l["market"] == "pitcher_strikeouts" for l in v)
+          for v in arch.values()))
+mini, matched = backtest.merge_odds(mini, arch, replace=True)
+check("both starts matched odds", matched == 2)
+recs = backtest.run_backtest(mini, n_sims=2000, seed=0)
+mbets = [r for r in recs if r["bet_side"]]
+check("odds attached to bets", mbets and all(r["odds"] is not None for r in mbets))
+check("CLV computed from closing", any(r["clv"] is not None for r in mbets))
+check("closing price differs from open drives CLV",
+      any(abs(r["clv"]) > 0 for r in mbets if r["clv"] is not None))
 
 print()
 if FAILURES:

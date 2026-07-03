@@ -41,18 +41,20 @@ def odds_ratio(p_pitcher, p_batter, p_league):
     return num / den
 
 
-def build_matchup_probs(pitcher, lineup, k_park=1.0, k_ump=1.0):
+def build_matchup_probs(pitcher, lineup, k_park=1.0, k_ump=1.0, k_form=1.0):
     """Per-batter outcome probabilities for the 9 lineup slots.
 
     pitcher: {"k":, "bb":, "hit":} per-PA rates
     lineup:  list of 9 dicts {"k":, "bb":, "hit":} (batter vs pitcher hand)
-    Returns array of shape (9, 4): columns K, WALK, HIT, OUT.
+    k_park/k_ump/k_form: multiplicative K-odds scalers (park, home-plate
+        umpire, and pitcher recent form/velocity). Returns array (9, 4):
+        columns K, WALK, HIT, OUT.
     """
     probs = np.zeros((len(lineup), 4))
     for i, batter in enumerate(lineup):
         p_k = odds_ratio(pitcher["k"], batter["k"], LEAGUE["k"])
-        # park + ump scale K odds, not raw prob (keeps it in [0,1])
-        odds_k = p_k / (1 - p_k) * k_park * k_ump
+        # park + ump + form scale K odds, not raw prob (keeps it in [0,1])
+        odds_k = p_k / (1 - p_k) * k_park * k_ump * k_form
         p_k = odds_k / (1 + odds_k)
         p_bb = odds_ratio(pitcher["bb"], batter["bb"], LEAGUE["bb"])
         p_hit = odds_ratio(pitcher["hit"], batter["hit"], LEAGUE["hit"])
@@ -78,10 +80,10 @@ def sample_pitch_limit(recent_pitch_counts, rng):
 
 
 def simulate_starter(pitcher, lineup, recent_pitch_counts=None,
-                     k_park=1.0, k_ump=1.0, n_sims=10000, seed=None):
+                     k_park=1.0, k_ump=1.0, k_form=1.0, n_sims=10000, seed=None):
     """Simulate n games; return (ks, outs) integer arrays of length n_sims."""
     rng = np.random.default_rng(seed)
-    probs = build_matchup_probs(pitcher, lineup, k_park, k_ump)
+    probs = build_matchup_probs(pitcher, lineup, k_park, k_ump, k_form)
     n_batters = len(probs)
     cdf = np.cumsum(probs, axis=1)  # per-batter outcome CDF
 

@@ -15,10 +15,12 @@ A Flask web app (SportsAid) with two prediction pipelines:
   - `betting_math.py` — odds conversion, multiplicative de-vig, fractional Kelly (quarter-Kelly, 2% cap)
   - `odds_props.py` — prop odds ingestion; `TheOddsAPIPropsFetcher` (requires paid plan + `ODDS_API_KEY`) or `StubPropsFetcher` (fixtures), auto-selected by env
   - `data_today.py` — serving-time data from the free MLB StatsAPI: schedule/probables/lineups, pitcher & batter per-PA rates (shrunk toward league average), box scores for grading
-  - `simulator.py` — PA-level Monte Carlo: odds-ratio (log5) matchups, park/ump K factors, pitch-count leash, DP-aware outs tracking
+  - `simulator.py` — PA-level Monte Carlo: odds-ratio (log5) matchups, park/ump/form K factors, pitch-count leash, DP-aware outs tracking
   - `factors.py` — serving-side park & umpire K-factor lookups (read JSON caches, fall back to 1.0); holds `TEAM_ABBR` (full name → abbrev)
+  - `form.py` — serving-side pitcher stuff/form: CSW%-blended K rate + velocity-trend K factor (reads `cache/pitcher_form.json`, neutral when absent)
   - `data_umpire.py` — training-side builder for `cache/ump_factors.json` (shrunk K/PA ratio per home-plate umpire); serving lookup is `data_today.get_home_plate_umpire`
-  - `backtest.py` — replay the simulator over historical starts: calibration/log-loss/Brier, plus ROI/CLV when odds are present. `--synthetic` self-consistency validation; `synthetic_dataset()` where model == data process
+  - `data_form.py` — training-side builder for `cache/pitcher_form.json` (CSW%, CSW→K regression, fastball velo baseline vs recent); heavyweight Statcast
+  - `backtest.py` — replay the simulator over historical starts: calibration/log-loss/Brier, plus ROI/CLV when odds are present. `--synthetic` self-consistency validation; `--odds <archive.csv|json>` merges historical prop odds (`load_odds_archive`/`merge_odds`)
   - `build_backtest_data.py` — training-side: assemble a real backtest dataset from StatsAPI using prior-season rates (no leakage)
   - `predict.py` — glue: slate → rates → sim (with park+ump K factors) → P(over) vs posted lines → edge/bet side/Kelly → `prop_predictions`
   - `llm.py` — Claude lanes: `facts` (web search, qualitative only), `predict` (independent Claude P(over) per line; sees the line, never the price or the sim output), `judge` (blend sim+llm, clamped to blend ± `JUDGE_BAND`, may veto bets). Rows share the sim run_id, sources `llm`/`judge`
@@ -62,8 +64,9 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - Prop tables are append-only; never UPDATE or DELETE line snapshots (CLV grading depends on history)
 - Edges are always computed against the de-vigged multi-book consensus, never a single book's vig-included price; minimum edge to flag a bet is `MIN_EDGE` (3%)
 - Team name mismatches between NBA API and Odds API are handled via `TEAM_NAME_FIXES` in `app.py`; MLB full-name → abbreviation mapping is `TEAM_ABBR` in `mlb/factors.py`
-- Park & umpire K factors are read from `mlb/cache/*.json` via `mlb/factors.py`, always falling back to 1.0 (neutral) — build them with `data_park.build_park_factors()` and `data_umpire.build_ump_factors()` (heavyweight, run per season)
-- Before trusting the simulator with real money, run `python mlb/backtest.py <dataset>` — the model must be calibrated (low ECE) and, with odds, show positive CLV
+- Park, umpire, and pitcher-form K factors are read from `mlb/cache/*.json` via `mlb/factors.py` and `mlb/form.py`, always falling back to 1.0 / no-op (neutral) — build them with `data_park.build_park_factors()`, `data_umpire.build_ump_factors()`, and `data_form.build_pitcher_form()` (heavyweight, run per season/weekly)
+- The simulator scales K odds by `k_park * k_ump * k_form`; the pitcher K rate is CSW-blended (`form.blended_k_rate`) before simulating — all four collapse to neutral when their cache is missing, so serving never hard-fails
+- Before trusting the simulator with real money, run `python mlb/backtest.py <dataset> [--odds archive.csv]` — the model must be calibrated (low ECE) and, with odds merged, show positive ROI and CLV
 - Injury flags only apply to top-50 players by PPG (configurable via `get_top_players(n=50)`)
 - Suppressed picks (Out/Doubtful star) are shown dimmed with red badge; warned picks (Questionable/Day-To-Day) show orange badge
 

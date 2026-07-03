@@ -28,17 +28,26 @@ perfect — that proves the scoring math, not the model's real edge.
     python mlb/backtest.py --synthetic
 """
 import argparse
+import csv
 import json
 import math
 import sys
 
 import numpy as np
 
+import factors
 import simulator
 from betting_math import (american_to_decimal, consensus_p_over,
                           kelly_fraction)
 
 MIN_EDGE = 0.03
+
+# accept a few common spellings of the two markets in an odds archive
+MARKET_ALIASES = {
+    "pitcher_strikeouts": "pitcher_strikeouts", "strikeouts": "pitcher_strikeouts",
+    "ks": "pitcher_strikeouts", "k": "pitcher_strikeouts", "so": "pitcher_strikeouts",
+    "pitcher_outs": "pitcher_outs", "outs": "pitcher_outs", "ip_outs": "pitcher_outs",
+}
 
 
 # ── engine ───────────────────────────────────────────────────────────────────
@@ -51,6 +60,7 @@ def run_backtest(dataset, n_sims=4000, seed=0):
             row["pitcher"], row["lineup"],
             recent_pitch_counts=row.get("recent_pitch_counts"),
             k_park=row.get("k_park", 1.0), k_ump=row.get("k_ump", 1.0),
+            k_form=row.get("k_form", 1.0),
             n_sims=n_sims, seed=seed + i,
         )
         samples = {"pitcher_strikeouts": ks, "pitcher_outs": outs}
@@ -110,6 +120,84 @@ def _score_line(arr, actual_value, ln):
         close_side = close_p if rec["bet_side"] == "over" else 1 - close_p
         rec["clv"] = ours - close_side
     return rec
+
+
+# ── odds archive merge ───────────────────────────────────────────────────────
+
+def _to_num(v):
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+        return int(f) if f == int(f) else f
+    except (ValueError, TypeError):
+        return None
+
+
+def load_odds_archive(path):
+    """Load historical prop odds keyed by (game_date, normalized pitcher).
+
+    Accepts JSON (list of records) or CSV with columns:
+      game_date, player_name, market, line, over_odds, under_odds,
+      [closing_over_odds, closing_under_odds]
+    'market' may be pitcher_strikeouts/pitcher_outs or a common alias.
+    Closing prices are optional (needed only for CLV); when absent, the
+    opening price is reused so CLV is ~0 rather than missing.
+    """
+    if path.lower().endswith(".json"):
+        with open(path) as f:
+            records = json.load(f)
+    else:
+        with open(path, newline="") as f:
+            records = list(csv.DictReader(f))
+
+    archive = {}
+    for r in records:
+        market = MARKET_ALIASES.get(str(r.get("market", "")).strip().lower())
+        line = _to_num(r.get("line"))
+        if market is None or line is None:
+            continue
+        over = _to_num(r.get("over_odds"))
+        under = _to_num(r.get("under_odds"))
+        key = (str(r.get("game_date", "")).strip(),
+               factors._norm_name(r.get("player_name")))
+        archive.setdefault(key, []).append({
+            "market": market, "line": float(line),
+            "over_odds": over, "under_odds": under,
+            "closing_over_odds": _to_num(r.get("closing_over_odds")) if r.get("closing_over_odds") not in (None, "") else over,
+            "closing_under_odds": _to_num(r.get("closing_under_odds")) if r.get("closing_under_odds") not in (None, "") else under,
+        })
+    return archive
+
+
+def merge_odds(dataset, archive, replace=True):
+    """Attach real odds to a dataset. Returns (dataset, n_matched_rows).
+
+    replace=True swaps each start's lines for the archive's actual posted
+    lines+odds (the honest ROI/CLV evaluation — the model is judged on the
+    lines the market really offered). replace=False keeps existing lines and
+    only attaches odds where (market, line) match.
+    """
+    matched = 0
+    for row in dataset:
+        key = (row.get("game_date", ""), factors._norm_name(row.get("pitcher_name")))
+        arch_lines = archive.get(key)
+        if not arch_lines:
+            if replace:
+                row["lines"] = []
+            continue
+        matched += 1
+        if replace:
+            row["lines"] = [dict(ln) for ln in arch_lines]
+        else:
+            by_key = {(a["market"], a["line"]): a for a in arch_lines}
+            for ln in row.get("lines", []):
+                a = by_key.get((ln["market"], ln["line"]))
+                if a:
+                    ln.update({k: a[k] for k in
+                               ("over_odds", "under_odds",
+                                "closing_over_odds", "closing_under_odds")})
+    return dataset, matched
 
 
 # ── metrics ──────────────────────────────────────────────────────────────────
@@ -277,6 +365,10 @@ def main():
                     help="run the self-consistency validation instead")
     ap.add_argument("--flat-market", action="store_true",
                     help="synthetic only: price every line at -110 to test ROI")
+    ap.add_argument("--odds", help="odds archive (CSV/JSON) to merge for ROI/CLV")
+    ap.add_argument("--keep-lines", action="store_true",
+                    help="with --odds: attach odds to existing lines instead of "
+                         "replacing them with the archive's posted lines")
     ap.add_argument("--sims", type=int, default=4000)
     ap.add_argument("--games", type=int, default=250)
     args = ap.parse_args()
@@ -289,6 +381,11 @@ def main():
         with open(args.dataset) as f:
             data = json.load(f)
         print(f"Loaded {len(data)} games from {args.dataset}")
+
+    if args.odds:
+        archive = load_odds_archive(args.odds)
+        data, matched = merge_odds(data, archive, replace=not args.keep_lines)
+        print(f"Merged odds archive: {matched}/{len(data)} starts matched a line")
 
     records = run_backtest(data, n_sims=args.sims)
     print(report(records))

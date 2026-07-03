@@ -16,6 +16,7 @@ from datetime import date, datetime, timezone
 
 import db
 import data_today
+import form
 import simulator
 from factors import park_k_factor, ump_k_factor
 from betting_math import consensus_p_over, kelly_fraction
@@ -69,12 +70,17 @@ def predict_date(game_date=None, n_sims=N_SIMS):
             try:
                 profile = data_today.get_pitcher_profile(pitcher["id"])
                 lineup, confirmed = _lineup_rates(opp_lineup_ids, pitcher["hand"])
+                # CSW%-blended K rate + velocity-trend K factor (neutral when
+                # the form cache has no entry for this pitcher)
+                k_rate = form.blended_k_rate(pitcher["id"], profile["k"])
+                k_form = form.velo_k_factor(pitcher["id"])
                 ks, outs = simulator.simulate_starter(
-                    {"k": profile["k"], "bb": profile["bb"], "hit": profile["hit"]},
+                    {"k": k_rate, "bb": profile["bb"], "hit": profile["hit"]},
                     lineup,
                     recent_pitch_counts=profile["recent_pitch_counts"],
                     k_park=k_park,
                     k_ump=k_ump,
+                    k_form=k_form,
                     n_sims=n_sims,
                 )
             except Exception as e:
@@ -88,7 +94,7 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                     conn, run_id, game_date, g, pitcher, market, arr, rows)
             print(f"[predict] {pitcher['name']} ({side}, "
                   f"lineup={'posted' if confirmed else 'league-avg'}, "
-                  f"ump={ump_name or 'TBD'} k={k_ump:.2f}): "
+                  f"ump={ump_name or 'TBD'} k={k_ump:.2f}, form k={k_form:.2f}): "
                   f"K mean {ks.mean():.2f}, outs mean {outs.mean():.2f}")
 
     print(f"[predict] logged {n_logged} predictions")

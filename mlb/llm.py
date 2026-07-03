@@ -26,6 +26,7 @@ from datetime import date
 
 import db
 import data_today
+import form
 from factors import park_k_factor, ump_k_factor
 from betting_math import consensus_p_over, kelly_fraction
 
@@ -230,6 +231,7 @@ PREDICT_SCHEMA = {
 PREDICT_PROMPT = """{game_date}: {pitcher} ({hand}HP, {team_side} starter) faces this lineup.
 
 Pitcher season per-PA rates (shrunk to league avg): K {pk:.3f}, BB {pbb:.3f}, hit {phit:.3f}
+Recent form (stuff & velocity): {form_summary}
 Recent start pitch counts: {pitch_counts}
 Opposing lineup per-PA K rates vs {hand}HP (slots 1-9): {lineup_ks}
 (league avg K rate: 0.223)
@@ -309,6 +311,7 @@ def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
     prompt = PREDICT_PROMPT.format(
         game_date=game_date, pitcher=pitcher["name"], hand=pitcher["hand"],
         team_side=side, pk=profile["k"], pbb=profile["bb"], phit=profile["hit"],
+        form_summary=form.form_summary(pitcher["id"]) or "n/a",
         pitch_counts=profile["recent_pitch_counts"] or "unknown",
         lineup_ks=lineup_ks, k_park=k_park, k_ump=k_ump,
         ump_name=ump_name or "TBD", lineup_status=lineup_status,
