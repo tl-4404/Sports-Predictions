@@ -1,13 +1,28 @@
 import csv
-from datetime import datetime, timedelta
+import json
+import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import sqlite3
-from flask import Flask, render_template, request, redirect, url_for, flash, g
+from flask import Flask, render_template, request, redirect, url_for, flash, g, abort
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.config["SECRET_KEY"] = "12345"
+# set SECRET_KEY in .env for production; the fallback is dev-only
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-only-insecure")
+
+# emails allowed to view /admin/tickets (comma-separated in .env)
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+# minimum edge vs de-vigged market before a pick is surfaced
+MIN_EDGE = 0.03
 
 DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
 NBA_PROBS_PATH = Path(__file__).resolve().parent / "nba" / "current_games_with_probs.csv"
@@ -154,6 +169,14 @@ def _parse_injury_note(note):
             result.append({"name": name.strip(), "status": status.strip()})
     return result
 
+# de-vig a two-way market (multiplicative): returns fair home probability
+def devig_pair(home_odds, away_odds):
+    p_h = american_to_prob(home_odds)
+    p_a = american_to_prob(away_odds)
+    if p_h is None or p_a is None or (p_h + p_a) <= 0:
+        return None
+    return p_h / (p_h + p_a)
+
 # get all +ev picks based on model
 def load_ev_picks(db):
     if not NBA_PROBS_PATH.exists():
@@ -183,13 +206,17 @@ def load_ev_picks(db):
             home_injuries = _parse_injury_note(row.get("home_injury_note", ""))
             away_injuries = _parse_injury_note(row.get("away_injury_note", ""))
 
+            # de-vigged market probability — comparing the model to raw
+            # vig-included prices manufactures phantom edges
+            fair_home = devig_pair(ml_map.get("Home"), ml_map.get("Away"))
             for side, model_prob in (("Home", home_win_prob), ("Away", 1 - home_win_prob)):
                 odds = ml_map.get(side)
                 if odds is None:
                     continue
                 implied = american_to_prob(odds)
-                edge = model_prob - implied
-                if edge > 0:
+                fair = fair_home if side == "Home" else (1 - fair_home if fair_home is not None else None)
+                edge = model_prob - (fair if fair is not None else implied)
+                if edge >= MIN_EDGE:
                     side_injuries = home_injuries if side == "Home" else away_injuries
                     suppressed = any(p["status"] in ("Out", "Doubtful") for p in side_injuries)
                     warnings = [p for p in side_injuries if p["status"] == "Questionable"]
@@ -209,6 +236,104 @@ def load_ev_picks(db):
                     })
     picks.sort(key=lambda x: x["edge"], reverse=True)
     return picks
+
+# latest MLB prop predictions for a date (most recent pipeline run only).
+# per (player, market, line) the judge's decision wins when present,
+# then the llm lane, then the raw simulator row.
+def load_mlb_props(db, game_date=None, bets_only=False):
+    game_date = game_date or date.today().isoformat()
+    try:
+        run = db.execute(
+            "SELECT MAX(run_id) r FROM prop_predictions WHERE game_date = ?",
+            (game_date,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return []  # prop tables not created yet — pipeline never ran
+    if not run or not run["r"]:
+        return []
+    rows = db.execute(
+        """SELECT * FROM prop_predictions
+           WHERE game_date = ? AND run_id = ?""",
+        (game_date, run["r"]),
+    ).fetchall()
+
+    rank = {"sim": 0, "llm": 1, "judge": 2}
+    best = {}
+    sim_means = {}
+    lane_probs = {}   # key -> {source: p_over} for the three-way comparison
+    for r in rows:
+        key = (r["player_name"], r["market"], r["line"])
+        lane_probs.setdefault(key, {})[r["source"]] = r["p_over"]
+        if r["source"] == "sim" and r["mean"] is not None:
+            sim_means[key] = r["mean"]
+        cur = best.get(key)
+        if cur is None or rank.get(r["source"], -1) > rank.get(cur["source"], -1):
+            best[key] = r
+
+    props = []
+    for key, r in best.items():
+        if bets_only and not r["bet_side"]:
+            continue
+        d = dict(r)
+        d["market_label"] = "Strikeouts" if r["market"] == "pitcher_strikeouts" else "Pitcher Outs"
+        d["edge"] = max(r["edge_over"] or 0, r["edge_under"] or 0) if r["edge_over"] is not None else None
+        d["lane"] = r["source"]                       # which lane made the call
+        d["lanes"] = lane_probs.get(key, {})          # sim/llm/judge P(over) side by side
+        if d.get("mean") is None:
+            d["mean"] = sim_means.get(key)            # judge/llm rows show the sim mean
+        # judge/llm rationale is stored as JSON — pull the human text out
+        if d.get("rationale"):
+            try:
+                meta = json.loads(d["rationale"])
+                d["rationale_text"] = meta.get("rationale") or ""
+                d["judge_action"] = meta.get("action")
+            except (ValueError, TypeError):
+                d["rationale_text"] = d["rationale"]
+        props.append(d)
+    props.sort(key=lambda x: x["edge"] if x["edge"] is not None else -1, reverse=True)
+    return props
+
+
+# per-lane real-money scorecard over a trailing window — which lane to trust.
+# ROI is profit (already at each bet's logged Kelly stake) divided by total
+# staked; CLV is the honest "did we beat the close" signal.
+def load_lane_scoreboard(db, days=14):
+    since = (date.today() - timedelta(days=days)).isoformat()
+    try:
+        rows = db.execute(
+            """SELECT p.source,
+                      COUNT(*)                                    AS graded,
+                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN 1 ELSE 0 END) AS bets,
+                      SUM(COALESCE(r.bet_won, 0))                 AS wins,
+                      SUM(COALESCE(r.profit_units, 0))            AS pnl,
+                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN COALESCE(p.kelly_frac,0) ELSE 0 END) AS staked,
+                      AVG(r.clv)                                  AS avg_clv,
+                      AVG(CASE WHEN r.clv IS NOT NULL AND r.clv > 0 THEN 1.0
+                               WHEN r.clv IS NOT NULL THEN 0.0 END) AS clv_beat_rate
+               FROM prop_predictions p
+               JOIN prop_results r ON r.prediction_id = p.id
+               WHERE p.game_date >= ?
+               GROUP BY p.source""",
+            (since,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    order = {"judge": 0, "sim": 1, "llm": 2}
+    board = []
+    for r in rows:
+        bets = r["bets"] or 0
+        board.append({
+            "source": r["source"],
+            "bets": bets,
+            "wins": r["wins"] or 0,
+            "hit_rate": (r["wins"] / bets) if bets else None,
+            "pnl": r["pnl"] or 0.0,
+            "roi": (r["pnl"] / r["staked"]) if (r["staked"] or 0) > 0 else None,
+            "avg_clv": r["avg_clv"],
+            "clv_beat_rate": r["clv_beat_rate"],
+        })
+    board.sort(key=lambda x: order.get(x["source"], 9))
+    return board
 
 # card maker helpers (converts american odds to probability)
 def american_to_prob(american):
@@ -253,6 +378,12 @@ def localtime_filter(ts):
 def index():
     db = get_db()
 
+    leagues = ["NBA", "MLB"]
+    active_league = request.args.get("league", "NBA")
+    if active_league not in leagues:
+        active_league = "NBA"
+    query = (request.args.get("q") or "").strip()
+
     # Pull events (order by start time)
     events = db.execute("""
         SELECT event_id, league, commence_time, home, away
@@ -260,6 +391,10 @@ def index():
         WHERE league = 'NBA'
         ORDER BY IFNULL(commence_time, '') ASC, home ASC
     """).fetchall()
+    if query:
+        ql = query.lower()
+        events = [e for e in events
+                  if ql in (e["home"] or "").lower() or ql in (e["away"] or "").lower()]
 
     games = []
     preferred = ("DraftKings", "FanDuel", "Caesars", "BetMGM")
@@ -315,7 +450,18 @@ def index():
         games.append(row)
 
     ev_picks = load_ev_picks(db)
-    return render_template("index.html", games=games, ev_picks=ev_picks)
+    mlb_props = load_mlb_props(db)
+    mlb_scoreboard = load_lane_scoreboard(db)
+    return render_template(
+        "index.html",
+        games=games,
+        ev_picks=ev_picks,
+        mlb_props=mlb_props,
+        mlb_scoreboard=mlb_scoreboard,
+        leagues=leagues,
+        active_league=active_league,
+        query=query,
+    )
 
 # register page
 @app.route("/register", methods=["GET", "POST"])
@@ -432,43 +578,25 @@ def picks_add():
     return redirect(url_for("my_card"))
 
 # delete a saved pick (from my-card)
-@app.route("/support", methods=["GET", "POST"])
+# NOTE: this was previously (mis)registered at /support with invalid SQL,
+# which both broke deletion and shadowed the real support page.
+@app.route("/picks/delete", methods=["POST"])
+@login_required
 def picks_delete():
-    # get all pick info
-    game_id     = request.form.get("game_id", type=int)
-    league      = (request.form.get("league") or "").strip()
-    market      = (request.form.get("market") or "").strip()   
-    side        = (request.form.get("side") or "").strip()       
-    team_home   = (request.form.get("team_home") or "").strip()
-    team_away   = (request.form.get("team_away") or "").strip()
-    line_str    = (request.form.get("line") or "").strip()        
-    odds        = request.form.get("odds", type=int)     
-    stake_cents = request.form.get("stake_cents", type=int) or 0
-    notes       = request.form.get("notes", "")
-    # check for valid market & side
-    if not market or not side:
-        flash("Pick needs a market and side.", "error")
-        return redirect(url_for("index"))
-    # get selection
-    selection = ""
-    if market.lower() == "moneyline":
-        team = team_home if side.lower() == "home" else team_away
-        selection = f"{team} ML"
-    elif market.lower() == "spread":
-        team = team_home if side.lower() == "home" else team_away
-        selection = f"{team} {line_str}" if line_str else f"{team} (Spread)"
-    elif market.lower() == "total":
-        label = "Over" if side.lower() == "over" else "Under"
-        selection = f"{label} {line_str}" if line_str else label
-    else:
-        selection = f"{market} · {side}"
+    pick_id = request.form.get("pick_id", type=int)
+    if not pick_id:
+        flash("Missing pick id.", "error")
+        return redirect(url_for("my_card"))
     db = get_db()
-    db.execute("""
-        DELETE FROM saved_picks WHERE (user_id, game_id, league, market, selection, odds_american, stake_cents, notes, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (current_user.id, game_id, league, market, selection, odds, stake_cents, notes, datetime.utcnow().isoformat()))
+    cur = db.execute(
+        "DELETE FROM saved_picks WHERE id = ? AND user_id = ?",
+        (pick_id, current_user.id),
+    )
     db.commit()
-    flash(f"Deleted: {market} - {selection} @ {odds}", "success")
+    if cur.rowcount:
+        flash("Pick deleted.", "success")
+    else:
+        flash("Pick not found.", "error")
     return redirect(url_for("my_card"))
 
 # support page
@@ -516,6 +644,9 @@ def support_success():
 @app.route("/admin/tickets")
 @login_required
 def admin_tickets():
+    # only allow-listed admins may read tickets (ADMIN_EMAILS in .env)
+    if current_user.email.lower() not in ADMIN_EMAILS:
+        abort(403)
     db = get_db()
     rows = db.execute("SELECT * FROM support_tickets ORDER BY id DESC LIMIT 100").fetchall()
     return render_template("admin_tickets.html", rows=rows)

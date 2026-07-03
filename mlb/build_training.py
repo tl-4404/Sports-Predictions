@@ -20,12 +20,14 @@ KEEP_COLS = [
     "pitch_type", "release_speed", "zone", "p_throws",
 ]
 
-# plate appearance outcomes that record an out
-OUT_EVENTS = {
-    "strikeout", "field_out", "force_out", "sac_fly", "sac_bunt",
-    "fielders_choice_out", "grounded_into_double_play",
-    "strikeout_double_play", "sac_fly_double_play",
-    "double_play", "triple_play",
+# outs recorded per plate-appearance event (multi-out events counted fully;
+# caught stealing / pickoffs aren't in `events` so outs are still ~1% low,
+# which is why serving-time grading uses official IP from the box score)
+EVENT_OUTS = {
+    "strikeout": 1, "field_out": 1, "force_out": 1, "sac_fly": 1,
+    "sac_bunt": 1, "fielders_choice_out": 1, "other_out": 1,
+    "grounded_into_double_play": 2, "strikeout_double_play": 2,
+    "sac_fly_double_play": 2, "double_play": 2, "triple_play": 3,
 }
 
 # identify the starting pitcher and their Ks + outs from pitch-level game data.
@@ -34,12 +36,9 @@ def get_starter_stats(game_df):
     starter_id = game_df.sort_values("at_bat_number").iloc[0]["pitcher"]
     starter_df = game_df[game_df["pitcher"] == starter_id]
 
-    actual_ks   = (starter_df["events"] == "strikeout").sum()
-    actual_outs = starter_df["events"].isin(OUT_EVENTS).sum()
-
-    # grounded_into_double_play is one PA but records 2 outs — add the extra
-    gidp         = (starter_df["events"] == "grounded_into_double_play").sum()
-    actual_outs += gidp
+    actual_ks   = starter_df["events"].isin(
+        ("strikeout", "strikeout_double_play")).sum()
+    actual_outs = starter_df["events"].map(EVENT_OUTS).fillna(0).sum()
 
     return starter_id, int(actual_ks), int(actual_outs)
 

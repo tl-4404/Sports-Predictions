@@ -24,6 +24,7 @@
           <th style="text-align:left; padding:8px;">Odds</th>
           <th style="text-align:left; padding:8px;">Stake</th>
           <th style="text-align:left; padding:8px;">Added</th>
+          <th style="text-align:left; padding:8px;"></th>
         </tr>
       </thead>
       <tbody>
@@ -37,6 +38,12 @@
             ${{ ((p.stake_cents or 0)/100) | round(2) }}
           </td>
           <td style="padding:8px;">{{ p.created_at }}</td>
+          <td style="padding:8px;">
+            <form method="post" action="{{ url_for('picks_delete') }}">
+              <input type="hidden" name="pick_id" value="{{ p.id }}">
+              <button class="btn btn-ghost" type="submit">Delete</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

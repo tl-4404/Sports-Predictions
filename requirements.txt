@@ -1,0 +1,18 @@
+# web app
+flask
+flask-login
+python-dotenv
+requests
+
+# pipeline (simulator + data)
+numpy
+pandas
+
+# LLM lanes (facts / Claude predictor / judge) — optional at serving time
+anthropic
+
+# training only (heavyweight — not needed on the serving box)
+torch
+scikit-learn
+joblib
+pybaseball

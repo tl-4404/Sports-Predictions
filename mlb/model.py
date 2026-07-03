@@ -59,8 +59,11 @@ def load_data():
     # feature matrix — drop identifiers and targets
     X_df = df.drop(columns=DROP_COLS)
 
-    # fill NaN with column median (batter splits often have gaps)
-    X_df = X_df.fillna(X_df.median())
+    # fill NaN with column median (batter splits often have gaps);
+    # medians are saved so inference fills the same way (see train_model)
+    medians = X_df.median()
+    X_df = X_df.fillna(medians)
+    load_data.medians = medians  # stashed for train_model to persist
 
     feature_cols = list(X_df.columns)
     X = X_df.values.astype(np.float32)
@@ -162,17 +165,20 @@ def train_model(epochs=100, lr=1e-3, batch_size=64):
     torch.save(best_state, os.path.join(MODEL_DIR, "ks_outs_model.pt"))
     joblib.dump(scaler,       os.path.join(MODEL_DIR, "scaler.pkl"))
     joblib.dump(feature_cols, os.path.join(MODEL_DIR, "feature_cols.pkl"))
-    print(f"Saved model, scaler, feature_cols → {MODEL_DIR}")
+    joblib.dump(load_data.medians, os.path.join(MODEL_DIR, "medians.pkl"))
+    print(f"Saved model, scaler, feature_cols, medians → {MODEL_DIR}")
 
     return model, scaler, feature_cols
 
 
 # ── prediction helper ────────────────────────────────────────────────────────
 # takes a dict of features (same keys as training), returns predicted Ks and outs
-def predict(features_dict, model=None, scaler=None, feature_cols=None):
+def predict(features_dict, model=None, scaler=None, feature_cols=None, medians=None):
     if model is None:
         feature_cols = joblib.load(os.path.join(MODEL_DIR, "feature_cols.pkl"))
         scaler       = joblib.load(os.path.join(MODEL_DIR, "scaler.pkl"))
+        medians_path = os.path.join(MODEL_DIR, "medians.pkl")
+        medians      = joblib.load(medians_path) if os.path.exists(medians_path) else None
         state        = torch.load(os.path.join(MODEL_DIR, "ks_outs_model.pt"),
                                   weights_only=True)
         model = KsOutsModel(len(feature_cols))
@@ -181,7 +187,11 @@ def predict(features_dict, model=None, scaler=None, feature_cols=None):
     # build feature vector in the correct column order
     x = np.array([features_dict.get(col, np.nan) for col in feature_cols], dtype=np.float32)
 
-    # fill NaN with 0 (scaler expects no NaN — median fill happens at training time)
+    # fill NaN the same way training did — with the training-set medians
+    # (a raw 0 scales to an extreme z-score and poisons the prediction)
+    if medians is not None:
+        fill = np.array([medians.get(col, 0.0) for col in feature_cols], dtype=np.float32)
+        x = np.where(np.isnan(x), fill, x)
     x = np.nan_to_num(x, nan=0.0)
     x = scaler.transform(x.reshape(1, -1))
     x = torch.tensor(x)

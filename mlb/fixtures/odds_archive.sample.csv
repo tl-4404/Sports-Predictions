@@ -1,0 +1,5 @@
+game_date,player_name,market,line,over_odds,under_odds,closing_over_odds,closing_under_odds
+2024-06-01,Ace Example,pitcher_strikeouts,6.5,-110,-110,-140,115
+2024-06-01,Ace Example,pitcher_outs,17.5,-115,-105,-120,100
+2024-06-01,Soft Tosser,pitcher_strikeouts,4.5,100,-120,-105,-115
+2024-06-01,Soft Tosser,pitcher_outs,15.5,-110,-110,-110,-110

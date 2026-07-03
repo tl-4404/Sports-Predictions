@@ -29,6 +29,98 @@
     </div>
   </section>
 
+  <!-- MLB lane scoreboard (real-money grading, trailing 14 days) -->
+  {% if mlb_scoreboard %}
+  <section>
+    <h2 class="section-title">Lane scorecard <span class="muted" style="font-size:14px;">· last 14 days</span></h2>
+    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline.</p>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Lane</th>
+            <th scope="col">Bets</th>
+            <th scope="col">Hit rate</th>
+            <th scope="col">ROI</th>
+            <th scope="col">Avg CLV</th>
+            <th scope="col">Beat close</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in mlb_scoreboard %}
+          <tr>
+            <td data-label="Lane"><span class="badge">{{ s.source|capitalize }}</span></td>
+            <td data-label="Bets">{{ s.bets }}</td>
+            <td data-label="Hit rate">{{ "%.1f%%"|format(s.hit_rate * 100) if s.hit_rate is not none else "—" }}</td>
+            <td data-label="ROI">{{ "%+.1f%%"|format(s.roi * 100) if s.roi is not none else "—" }}</td>
+            <td data-label="Avg CLV">{{ "%+.3f"|format(s.avg_clv) if s.avg_clv is not none else "—" }}</td>
+            <td data-label="Beat close">{{ "%.0f%%"|format(s.clv_beat_rate * 100) if s.clv_beat_rate is not none else "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- MLB pitcher props -->
+  {% if mlb_props %}
+  <section>
+    <h2 class="section-title">MLB pitcher props</h2>
+    <p class="muted" style="margin:-6px 0 10px;">Judge decision shown when available, else Claude, else simulator. The Sim / LLM / Judge columns compare all three lanes on the same line.</p>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Pitcher</th>
+            <th scope="col">Market</th>
+            <th scope="col">Line</th>
+            <th scope="col">Sim mean</th>
+            <th scope="col" title="Simulator P(over)">Sim</th>
+            <th scope="col" title="Claude predictor P(over)">LLM</th>
+            <th scope="col" title="Judge P(over) — the decision">Judge</th>
+            <th scope="col">Market</th>
+            <th scope="col">Edge</th>
+            <th scope="col">Decision</th>
+            <th scope="col">Bet</th>
+            <th scope="col">Stake</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in mlb_props %}
+          <tr{% if p.rationale_text %} title="{{ p.rationale_text }}"{% endif %}>
+            <td data-label="Pitcher"><strong>{{ p.player_name }}</strong></td>
+            <td data-label="Market">{{ p.market_label }}</td>
+            <td data-label="Line">{{ p.line }}</td>
+            <td data-label="Sim mean">{{ "%.1f"|format(p.mean) if p.mean is not none else "—" }}</td>
+            <td data-label="Sim">{{ "%.0f%%"|format(p.lanes.sim * 100) if p.lanes.sim is not none else "—" }}</td>
+            <td data-label="LLM">{{ "%.0f%%"|format(p.lanes.llm * 100) if p.lanes.llm is not none else "—" }}</td>
+            <td data-label="Judge"><strong>{{ "%.0f%%"|format(p.lanes.judge * 100) if p.lanes.judge is not none else "—" }}</strong></td>
+            <td data-label="Market">{{ "%.0f%%"|format(p.market_p_over * 100) if p.market_p_over is not none else "no lines" }}</td>
+            <td data-label="Edge">{{ "%+.1f%%"|format(p.edge * 100) if p.edge is not none else "—" }}</td>
+            <td data-label="Decision">
+              <span class="badge">{{ p.lane|capitalize }}</span>
+              {% if p.judge_action == 'pass' %}<span class="badge badge-warn">veto</span>{% endif %}
+            </td>
+            <td data-label="Bet">
+              {% if p.bet_side %}
+                <span class="badge">{{ p.bet_side|capitalize }} {{ p.line }}
+                  @ {{ p.over_odds if p.bet_side == 'over' else p.under_odds }} ({{ p.book }})</span>
+              {% else %}
+                <span class="muted">pass</span>
+              {% endif %}
+            </td>
+            <td data-label="Stake">
+              {{ "%.2f%%"|format(p.kelly_frac * 100) if p.kelly_frac else "—" }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
   <!-- Picks -->
   <section class="grid two-col">
     <div>
