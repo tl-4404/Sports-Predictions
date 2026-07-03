@@ -119,7 +119,7 @@ DK_PAYLOAD = {
     },
 }
 
-rows = odds_props.SportsbookScraperFetcher()._parse(
+rows = odds_props.DraftKingsScraper()._parse(
     DK_PAYLOAD, "2026-07-03", "2026-07-03T12:00:00Z")
 check("parsed only today's events (2 rows)", len(rows) == 2, f"({len(rows)})")
 by_mkt = {r["market"]: r for r in rows}
@@ -134,11 +134,70 @@ check("american odds parsed (incl. unicode minus)",
 check("future-day event excluded",
       all(r["player_name"] != "Tomorrow Guy" for r in rows))
 
-# scraped rows flow through the existing de-vig consensus unchanged
-from betting_math import consensus_p_over
-mp = consensus_p_over([(k["over_odds"], k["under_odds"])])
-check("scraped row de-vigs to a consensus prob", mp is not None and 0 < mp < 1,
-      f"({mp:.3f})")
+# ── FanDuel scraper parser (offline payload) ─────────────────────────────────
+print("fanduel scraper parser:")
+
+FD_PAYLOAD = {
+    "attachments": {
+        "events": {
+            "9001": {"openDate": "2026-07-03T23:05:00Z"},
+            "9002": {"openDate": "2026-07-04T18:10:00Z"},  # other day
+        },
+        "markets": {
+            "m1": {"eventId": 9001, "marketType": "PITCHER_STRIKEOUTS",
+                   "marketName": "Gerrit Cole - Total Strikeouts", "runners": [
+                       {"runnerName": "Over 6.5", "handicap": 6.5,
+                        "winRunnerOdds": {"americanDisplayOdds": {"americanOdds": -120}}},
+                       {"runnerName": "Under 6.5", "handicap": 6.5,
+                        "winRunnerOdds": {"americanDisplayOdds": {"americanOdds": 100}}},
+                   ]},
+            "m2": {"eventId": 9001, "marketType": "PITCHING_OUTS",
+                   "marketName": "Gerrit Cole - Pitching Outs", "runners": [
+                       {"runnerName": "Over", "handicap": 17.5,
+                        "winRunnerOdds": {"americanDisplayOdds": {"americanOdds": -110}}},
+                       {"runnerName": "Under", "handicap": 17.5,
+                        "winRunnerOdds": {"americanDisplayOdds": {"americanOdds": -110}}},
+                   ]},
+            "m3": {"eventId": 9002, "marketType": "PITCHER_STRIKEOUTS",
+                   "marketName": "Tomorrow Guy - Total Strikeouts", "runners": [
+                       {"runnerName": "Over", "handicap": 5.5,
+                        "winRunnerOdds": {"americanDisplayOdds": {"americanOdds": -105}}}]},
+            "m4": {"eventId": 9001, "marketType": "TOTAL_BASES",
+                   "marketName": "Someone - Total Bases", "runners": []},  # ignored
+        },
+    },
+}
+
+fd = odds_props.FanDuelScraper()._parse(FD_PAYLOAD, "2026-07-03",
+                                        "2026-07-03T12:00:00Z")
+check("fanduel parsed today's markets (2 rows)", len(fd) == 2, f"({len(fd)})")
+fd_by = {r["market"]: r for r in fd}
+fk = fd_by.get("pitcher_strikeouts")
+check("fanduel player from market name", fk and fk["player_name"] == "Gerrit Cole")
+check("fanduel line + odds parsed",
+      fk and fk["line"] == 6.5 and fk["over_odds"] == -120 and fk["under_odds"] == 100,
+      f"({fk['over_odds']}/{fk['under_odds']})" if fk else "")
+check("fanduel book label", fk and fk["book"] == "FanDuel")
+check("fanduel future-day market excluded",
+      all(r["player_name"] != "Tomorrow Guy" for r in fd))
+
+# ── multi-book consensus ─────────────────────────────────────────────────────
+print("multi-book consensus:")
+agg = odds_props.SportsbookScraperFetcher()
+check("aggregator defaults to DK + FD",
+      [s.BOOK for s in agg.scrapers] == ["DraftKings", "FanDuel"])
+check("SCRAPE_BOOKS overrides book set",
+      [s.BOOK for s in odds_props.SportsbookScraperFetcher(books="fanduel").scrapers]
+      == ["FanDuel"])
+# two books on the same prop de-vig to a blended consensus between them
+from betting_math import consensus_p_over, devig_two_way
+p_dk, _ = devig_two_way(k["over_odds"], k["under_odds"])       # -115/-105
+p_fd, _ = devig_two_way(fk["over_odds"], fk["under_odds"])     # -120/+100
+cons = consensus_p_over([(k["over_odds"], k["under_odds"]),
+                         (fk["over_odds"], fk["under_odds"])])
+check("consensus averages the two books",
+      abs(cons - (p_dk + p_fd) / 2) < 1e-9,
+      f"(dk={p_dk:.3f}, fd={p_fd:.3f}, cons={cons:.3f})")
 
 # ── PrizePicks interface loader ──────────────────────────────────────────────
 print("prizepicks interface loader:")
@@ -177,6 +236,61 @@ check("market_label populated",
       board[0]["market_label"] in ("Strikeouts", "Pitcher Outs"))
 playable = webapp.load_prizepicks_board(conn, "2026-07-03", playable_only=True)
 check("playable_only filters", len(playable) == 2 and all(p["playable"] for p in playable))
+conn.close()
+
+# ── PrizePicks in the lane scorecard ─────────────────────────────────────────
+print("prizepicks lane scorecard:")
+
+conn = db.connect(Path(tempfile.mkdtemp()) / "score.db")
+pp.ensure_schema(conn)
+today = webapp.date.today().isoformat()
+BE = pp.power_breakeven(2)  # ~0.5774
+# 5 playable graded legs: 4 wins / 1 loss (80% > 57.7% break-even -> +ROI);
+# plus a non-playable pick and a push, which must be excluded from the tally.
+legs = [("more", 1), ("less", 1), ("more", 1), ("more", 1), ("less", 0)]
+for i, (side, won) in enumerate(legs):
+    pid = conn.execute(
+        """INSERT INTO prizepicks_picks
+           (run_id, created_at, game_date, game_pk, player_name, player_id,
+            market, line, p_over, pick_side, p_pick, breakeven, edge,
+            ev_2, ev_3, playable, mean)
+           VALUES ('r1',?,?,1,?,?, 'pitcher_strikeouts',5.5,0.6,?,0.6,?,0.05,0,0,1,0)""",
+        (db.utcnow(), today, f"P{i}", i, side, BE)).lastrowid
+    conn.execute(
+        """INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
+           VALUES (?,?,?,?,?)""",
+        (pid, db.utcnow(), 6, side, won))
+# excluded: a non-playable pick, and a playable push (pick_won NULL)
+pid = conn.execute(
+    """INSERT INTO prizepicks_picks
+       (run_id, created_at, game_date, game_pk, player_name, player_id, market,
+        line, p_over, pick_side, p_pick, breakeven, edge, ev_2, ev_3, playable, mean)
+       VALUES ('r1',?,?,1,'NotPlayable',99,'pitcher_outs',15.5,0.52,'more',0.52,?,-0.05,0,0,0,0)""",
+    (db.utcnow(), today, BE)).lastrowid
+conn.execute("""INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
+                VALUES (?,?,?,?,?)""", (pid, db.utcnow(), 16, "more", 1))
+pid = conn.execute(
+    """INSERT INTO prizepicks_picks
+       (run_id, created_at, game_date, game_pk, player_name, player_id, market,
+        line, p_over, pick_side, p_pick, breakeven, edge, ev_2, ev_3, playable, mean)
+       VALUES ('r1',?,?,1,'Pushy',98,'pitcher_strikeouts',6.0,0.6,'more',0.6,?,0.05,0,0,1,0)""",
+    (db.utcnow(), today, BE)).lastrowid
+conn.execute("""INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
+                VALUES (?,?,?,?,?)""", (pid, db.utcnow(), 6, "push", None))
+conn.commit()
+
+board = webapp.load_lane_scoreboard(conn, days=14)
+pp_lane = [r for r in board if r["source"] == "prizepicks"]
+check("prizepicks row present even with no sportsbook lanes", len(pp_lane) == 1)
+row = pp_lane[0]
+check("only playable, decided legs counted (5)", row["bets"] == 5, f"({row['bets']})")
+check("wins counted (4)", row["wins"] == 4, f"({row['wins']})")
+check("hit rate 80%", abs(row["hit_rate"] - 0.8) < 1e-9, f"({row['hit_rate']:.3f})")
+expected_roi = (4 * (1 / BE - 1) - 1) / 5
+check("ROI scored vs break-even", abs(row["roi"] - expected_roi) < 1e-9,
+      f"({row['roi']:+.3f})")
+check("beating break-even -> positive ROI", row["roi"] > 0)
+check("no CLV for pick'em", row["avg_clv"] is None and row["clv_beat_rate"] is None)
 conn.close()
 
 print()

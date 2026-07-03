@@ -33,7 +33,7 @@
   {% if mlb_scoreboard %}
   <section>
     <h2 class="section-title">Lane scorecard <span class="muted" style="font-size:14px;">· last 14 days</span></h2>
-    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline.</p>
+    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline. PrizePicks ROI is scored against its parlay break-even (no CLV — pick'em has no market close).</p>
     <div class="table-scroll">
       <table class="table">
         <thead>
@@ -49,7 +49,7 @@
         <tbody>
           {% for s in mlb_scoreboard %}
           <tr>
-            <td data-label="Lane"><span class="badge">{{ s.source|capitalize }}</span></td>
+            <td data-label="Lane"><span class="badge">{% if s.source == 'prizepicks' %}PrizePicks{% else %}{{ s.source|capitalize }}{% endif %}</span></td>
             <td data-label="Bets">{{ s.bets }}</td>
             <td data-label="Hit rate">{{ "%.1f%%"|format(s.hit_rate * 100) if s.hit_rate is not none else "—" }}</td>
             <td data-label="ROI">{{ "%+.1f%%"|format(s.roi * 100) if s.roi is not none else "—" }}</td>

@@ -348,8 +348,8 @@ def load_lane_scoreboard(db, days=14):
             (since,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return []
-    order = {"judge": 0, "sim": 1, "llm": 2}
+        rows = []  # sportsbook lanes never ran — still report PrizePicks below
+    order = {"judge": 0, "sim": 1, "llm": 2, "prizepicks": 3}
     board = []
     for r in rows:
         bets = r["bets"] or 0
@@ -363,8 +363,47 @@ def load_lane_scoreboard(db, days=14):
             "avg_clv": r["avg_clv"],
             "clv_beat_rate": r["clv_beat_rate"],
         })
+    pp_row = _prizepicks_lane_row(db, since)
+    if pp_row:
+        board.append(pp_row)
     board.sort(key=lambda x: order.get(x["source"], 9))
     return board
+
+
+# PrizePicks has no two-way price, Kelly stake, or closing line, so it can't
+# share the query above. We score its playable picks against the SAME parlay
+# break-even they were selected on: treat each leg as a flat 1u bet at the
+# break-even's fair decimal odds (1/breakeven). ROI then reads as ">0 iff the
+# lane's realized win rate beat its break-even" — an honest, comparable number.
+# CLV is N/A (no market close) and shows as "—".
+def _prizepicks_lane_row(db, since):
+    try:
+        rows = db.execute(
+            """SELECT p.breakeven, r.pick_won
+               FROM prizepicks_picks p
+               JOIN prizepicks_results r ON r.pick_id = p.id
+               WHERE p.game_date >= ? AND p.playable = 1
+                 AND r.pick_won IS NOT NULL""",
+            (since,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    if not rows:
+        return None
+    n = len(rows)
+    wins = sum(r["pick_won"] for r in rows)
+    pnl = sum((1.0 / r["breakeven"] - 1.0) if r["pick_won"] else -1.0
+              for r in rows)
+    return {
+        "source": "prizepicks",
+        "bets": n,
+        "wins": wins,
+        "hit_rate": wins / n,
+        "pnl": pnl,
+        "roi": pnl / n,          # flat 1u per leg
+        "avg_clv": None,         # no two-way market / closing line
+        "clv_beat_rate": None,
+    }
 
 # card maker helpers (converts american odds to probability)
 def american_to_prob(american):

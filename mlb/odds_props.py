@@ -163,23 +163,39 @@ def _parse_american(v):
         return None
 
 
-# ── free sportsbook scraper (DraftKings) ─────────────────────────────────────
+# ── free sportsbook scrapers (per book) ──────────────────────────────────────
+#
+# Each scraper hits one book's undocumented JSON endpoints and emits the same
+# prop_lines rows as the API fetcher, so edges/de-vig/Kelly are unchanged.
+# Best-effort: these endpoints and their ids drift, so everything is
+# configurable via env — verify against the live boards. Against the books'
+# ToS — personal / research use.
 
-# DraftKings MLB event group + the category ids that hold pitcher props. These
-# ids drift over time — override via env and verify against the live board.
-DK_BASE = "https://sportsbook.draftkings.com/sites/US-SB/api/v5/eventgroups"
-DK_MLB_EVENTGROUP = "84240"
-DK_PITCHER_CATEGORIES = ("1031",)   # "Pitcher Props" — verify against DK
 
-
-def _dk_market(name):
-    """Map a DraftKings subcategory name to our market key (or None)."""
+def _prop_market(name):
+    """Map a book's market/subcategory label to our market key (or None)."""
     n = (name or "").lower()
     if "strikeout" in n:
         return "pitcher_strikeouts"
     if "out" in n and ("pitch" in n or "record" in n):
         return "pitcher_outs"
     return None
+
+
+def _row(game_date, event_id, player, market, book, line, over, under, as_of):
+    return {
+        "game_date": game_date, "game_pk": None, "event_id": event_id,
+        "player_name": player, "player_id": None, "market": market,
+        "book": book, "line": float(line),
+        "over_odds": _parse_american(over), "under_odds": _parse_american(under),
+        "as_of": as_of,
+    }
+
+
+# DraftKings MLB event group + the category ids that hold pitcher props.
+DK_BASE = "https://sportsbook.draftkings.com/sites/US-SB/api/v5/eventgroups"
+DK_MLB_EVENTGROUP = "84240"
+DK_PITCHER_CATEGORIES = ("1031",)   # "Pitcher Props" — verify against DK
 
 
 def _dk_offer_pair(offer):
@@ -196,16 +212,9 @@ def _dk_offer_pair(offer):
     return pair
 
 
-class SportsbookScraperFetcher:
-    """Free scraper of DraftKings' public JSON endpoints for pitcher props.
-
-    Best-effort: DK's endpoints are undocumented and their event-group /
-    category ids drift, so all three are configurable via env (DK_BASE,
-    DK_MLB_EVENTGROUP, DK_PITCHER_CATEGORIES). Against DK's ToS — personal /
-    research use. Emits the same prop_lines rows as the API fetcher so the rest
-    of the pipeline (de-vig consensus, edges, Kelly) is unchanged. Single-book:
-    for a real multi-book consensus, scrape a second book and merge the rows.
-    """
+class DraftKingsScraper:
+    """DraftKings pitcher props. Ids drift — override via DK_BASE /
+    DK_MLB_EVENTGROUP / DK_PITCHER_CATEGORIES."""
 
     BOOK = "DraftKings"
 
@@ -248,7 +257,7 @@ class SportsbookScraperFetcher:
         for cat in eg.get("offerCategories", []) or []:
             for sub in cat.get("offerSubcategoryDescriptors", []) or []:
                 osub = sub.get("offerSubcategory") or {}
-                market = _dk_market(sub.get("name") or osub.get("name"))
+                market = _prop_market(sub.get("name") or osub.get("name"))
                 if not market:
                     continue
                 for offer_list in osub.get("offers", []) or []:
@@ -260,14 +269,109 @@ class SportsbookScraperFetcher:
                         for (player, line), sides in _dk_offer_pair(offer).items():
                             if player is None or line is None:
                                 continue
-                            rows.append({
-                                "game_date": game_date, "game_pk": None,
-                                "event_id": eid, "player_name": player,
-                                "player_id": None, "market": market,
-                                "book": self.BOOK, "line": float(line),
-                                "over_odds": _parse_american(sides.get("over")),
-                                "under_odds": _parse_american(sides.get("under")),
-                                "as_of": as_of})
+                            rows.append(_row(
+                                game_date, eid, player, market, self.BOOK, line,
+                                sides.get("over"), sides.get("under"), as_of))
+        return rows
+
+
+# FanDuel content-managed page for MLB props. FanDuel keys markets by a state
+# subdomain and puts the player in the market name ("Gerrit Cole - Strikeouts"),
+# the line on each runner's `handicap`, and odds under
+# winRunnerOdds.americanDisplayOdds.americanOdds. Override the URL via env.
+FD_BASE = ("https://sbapi.nj.sportsbook.fanduel.com/api/content-managed-page")
+FD_MLB_PAGE = "mlb"
+
+
+def _fd_player(market_name):
+    """Pull the player name out of a FanDuel market name ('Name - Market')."""
+    name = (market_name or "").split(" - ")[0].strip()
+    return name or None
+
+
+class FanDuelScraper:
+    """FanDuel pitcher props. Best-effort — override FD_BASE / FD_MLB_PAGE and
+    verify the state subdomain against the live board."""
+
+    BOOK = "FanDuel"
+
+    def __init__(self, base=None, page=None):
+        self.base = base or os.getenv("FD_BASE", FD_BASE)
+        self.page = page or os.getenv("FD_MLB_PAGE", FD_MLB_PAGE)
+
+    def fetch(self, game_date=None):
+        game_date = game_date or date.today().isoformat()
+        as_of = datetime.now(timezone.utc).isoformat()
+        r = requests.get(
+            self.base,
+            params={"page": "CUSTOM", "customPageId": self.page,
+                    "_ak": "FhMFpcPWXMeyZxOx", "timezone": "America/New_York"},
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            timeout=20)
+        r.raise_for_status()
+        return self._parse(r.json(), game_date, as_of)
+
+    def _parse(self, payload, game_date, as_of):
+        att = payload.get("attachments", {}) or {}
+        events = att.get("events", {}) or {}
+        event_day = {str(k): (v.get("openDate") or "")[:10]
+                     for k, v in events.items()}
+        rows = []
+        for mkt in (att.get("markets", {}) or {}).values():
+            market = _prop_market(mkt.get("marketType") or mkt.get("marketName"))
+            if not market:
+                continue
+            eid = str(mkt.get("eventId"))
+            day = event_day.get(eid)
+            if day and day != game_date:
+                continue
+            player = _fd_player(mkt.get("marketName"))
+            if not player:
+                continue
+            sides, line = {}, None
+            for run in mkt.get("runners", []) or []:
+                name = (run.get("runnerName") or "").lower()
+                side = "over" if "over" in name else "under" if "under" in name else None
+                if side is None:
+                    continue
+                line = run.get("handicap", line)
+                odds = (((run.get("winRunnerOdds") or {})
+                         .get("americanDisplayOdds") or {}).get("americanOdds"))
+                sides[side] = odds
+            if line is None or not sides:
+                continue
+            rows.append(_row(game_date, eid, player, market, self.BOOK, line,
+                             sides.get("over"), sides.get("under"), as_of))
+        return rows
+
+
+BOOK_SCRAPERS = {
+    "draftkings": DraftKingsScraper, "dk": DraftKingsScraper,
+    "fanduel": FanDuelScraper, "fd": FanDuelScraper,
+}
+
+
+class SportsbookScraperFetcher:
+    """Aggregates one or more single-book scrapers into a multi-book snapshot,
+    so edges de-vig against a real consensus rather than one book's price.
+
+    Books via SCRAPE_BOOKS (comma-separated; default 'draftkings,fanduel').
+    Per-book failures are isolated so one book going down doesn't sink the run.
+    """
+
+    def __init__(self, books=None):
+        names = books or os.getenv("SCRAPE_BOOKS") or "draftkings,fanduel"
+        if isinstance(names, str):
+            names = [n.strip().lower() for n in names.split(",") if n.strip()]
+        self.scrapers = [BOOK_SCRAPERS[n]() for n in names if n in BOOK_SCRAPERS]
+
+    def fetch(self, game_date=None):
+        rows = []
+        for s in self.scrapers:
+            try:
+                rows.extend(s.fetch(game_date))
+            except Exception as e:  # isolate per-book failures
+                print(f"[odds_props] {s.BOOK} scrape failed: {e}")
         return rows
 
 
