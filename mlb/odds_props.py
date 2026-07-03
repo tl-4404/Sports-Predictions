@@ -37,6 +37,7 @@ except ImportError:
     pass
 
 import db
+import netfetch
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "baseball_mlb"
@@ -242,12 +243,7 @@ class DraftKingsScraper:
 
     def _get_category(self, category):
         url = f"{self.base}/{self.eventgroup}/categories/{category}"
-        r = requests.get(
-            url, params={"format": "json"},
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return netfetch.get_json(url, params={"format": "json"})
 
     def _parse(self, payload, game_date, as_of):
         eg = payload.get("eventGroup", {}) or {}
@@ -302,14 +298,11 @@ class FanDuelScraper:
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
         as_of = datetime.now(timezone.utc).isoformat()
-        r = requests.get(
+        payload = netfetch.get_json(
             self.base,
             params={"page": "CUSTOM", "customPageId": self.page,
-                    "_ak": "FhMFpcPWXMeyZxOx", "timezone": "America/New_York"},
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            timeout=20)
-        r.raise_for_status()
-        return self._parse(r.json(), game_date, as_of)
+                    "_ak": "FhMFpcPWXMeyZxOx", "timezone": "America/New_York"})
+        return self._parse(payload, game_date, as_of)
 
     def _parse(self, payload, game_date, as_of):
         att = payload.get("attachments", {}) or {}

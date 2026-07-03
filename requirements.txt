@@ -8,6 +8,11 @@ requests
 numpy
 pandas
 
+# free odds/PrizePicks scrapers — recommended: cloudscraper gets past Cloudflare
+# bot protection (esp. PrizePicks). Absent, the scrapers fall back to plain
+# requests with browser headers (fine for DraftKings/FanDuel, weaker on PP).
+cloudscraper
+
 # LLM lanes (facts / Claude predictor / judge) — optional at serving time
 anthropic
 

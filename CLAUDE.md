@@ -13,7 +13,10 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - `mlb/` — all MLB code
   - `db.py` — props schema: append-only line history, predictions, graded results
   - `betting_math.py` — odds conversion, multiplicative de-vig, fractional Kelly (quarter-Kelly, 2% cap)
-  - `odds_props.py` — prop odds ingestion; `TheOddsAPIPropsFetcher` (requires paid plan + `ODDS_API_KEY`) or `StubPropsFetcher` (fixtures), auto-selected by env
+  - `odds_props.py` — prop odds ingestion behind the `ODDS_SOURCE` toggle: `TheOddsAPIPropsFetcher` (paid plan + `ODDS_API_KEY`), `SportsbookScraperFetcher` (free multi-book scraper — `DraftKingsScraper` + `FanDuelScraper`, merged for consensus), or `StubPropsFetcher` (fixtures)
+  - `prizepicks.py` — PrizePicks DFS lane: live/stub fetcher, power-play break-even math, evaluate (P(over) at the PP line off the sim distribution), grade, board; own append-only tables (`prizepicks_lines`/`prizepicks_picks`/`prizepicks_results`)
+  - `netfetch.py` — resilient HTTP for the scrapers: browser-like session, optional `cloudscraper` (Cloudflare), retries with backoff
+  - `doctor.py` — preflight readiness check (`python run_pipeline.py --stage doctor`): deps, LLM key, StatsAPI, odds source, PrizePicks, accuracy caches
   - `data_today.py` — serving-time data from the free MLB StatsAPI: schedule/probables/lineups, pitcher & batter per-PA rates (shrunk toward league average), box scores for grading
   - `simulator.py` — PA-level Monte Carlo: odds-ratio (log5) matchups, park/ump/form K factors, pitch-count leash, DP-aware outs tracking
   - `factors.py` — serving-side park & umpire K-factor lookups (read JSON caches, fall back to 1.0); holds `TEAM_ABBR` (full name → abbrev)
@@ -40,11 +43,12 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - `static/style.css` — all CSS (dark theme, CSS variables)
 
 ## Daily workflow (MLB)
-1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → LLM lanes (if `ANTHROPIC_API_KEY` set) → grade yesterday
+0. `python run_pipeline.py --stage doctor` — preflight: confirms StatsAPI, the odds source, the LLM key, PrizePicks, and caches are ready before a live run
+1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → LLM lanes (if `ANTHROPIC_API_KEY` set) → PrizePicks lane → grade yesterday
 2. `python run_pipeline.py --stage odds` — hourly line snapshots (line history feeds CLV)
 3. `python run_pipeline.py --stage predict` — re-run after lineups are confirmed
 4. `python run_pipeline.py --stage llm` — facts → Claude predictor → judge only
-5. `python app.py` — Flask dev server; home page shows the latest run's props (judge row wins per prop, then llm, then sim)
+5. `python app.py` — Flask dev server; home page shows sportsbook props (judge>llm>sim per prop) and the PrizePicks best-lines board
 
 ## Daily workflow (NBA)
 1. `python odds_client.py` — refresh odds in DB

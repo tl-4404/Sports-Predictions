@@ -29,8 +29,6 @@ import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import requests
-
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -39,6 +37,7 @@ except ImportError:
 
 import db
 import data_today
+import netfetch
 import simulator
 from factors import park_k_factor, ump_k_factor
 from predict import simulate_pitcher, N_SIMS
@@ -109,15 +108,10 @@ class PrizePicksFetcher:
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
         as_of = datetime.now(timezone.utc).isoformat()
-        r = requests.get(
+        payload = netfetch.get_json(
             self.base,
             params={"league_id": self.league_id, "per_page": 1000,
-                    "single_stat": "true"},
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        payload = r.json()
+                    "single_stat": "true"})
         return _parse_projections(payload, game_date, as_of)
 
 
