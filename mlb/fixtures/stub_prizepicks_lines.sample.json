@@ -1,0 +1,10 @@
+[
+  {"player_name": "Ace Example", "stat_type": "Pitcher Strikeouts", "line": 6.5,
+   "projection_id": "pp-ace-k"},
+  {"player_name": "Ace Example", "stat_type": "Pitching Outs", "line": 16.5,
+   "projection_id": "pp-ace-outs"},
+  {"player_name": "Soft Tosser", "stat_type": "Pitcher Strikeouts", "line": 4.5,
+   "projection_id": "pp-soft-k"},
+  {"player_name": "Soft Tosser", "stat_type": "Pitching Outs", "line": 14.5,
+   "projection_id": "pp-soft-outs"}
+]

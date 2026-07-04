@@ -33,7 +33,7 @@
   {% if mlb_scoreboard %}
   <section>
     <h2 class="section-title">Lane scorecard <span class="muted" style="font-size:14px;">· last 14 days</span></h2>
-    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline.</p>
+    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline. PrizePicks ROI is scored against its parlay break-even (no CLV — pick'em has no market close).</p>
     <div class="table-scroll">
       <table class="table">
         <thead>
@@ -49,7 +49,7 @@
         <tbody>
           {% for s in mlb_scoreboard %}
           <tr>
-            <td data-label="Lane"><span class="badge">{{ s.source|capitalize }}</span></td>
+            <td data-label="Lane"><span class="badge">{% if s.source == 'prizepicks' %}PrizePicks{% else %}{{ s.source|capitalize }}{% endif %}</span></td>
             <td data-label="Bets">{{ s.bets }}</td>
             <td data-label="Hit rate">{{ "%.1f%%"|format(s.hit_rate * 100) if s.hit_rate is not none else "—" }}</td>
             <td data-label="ROI">{{ "%+.1f%%"|format(s.roi * 100) if s.roi is not none else "—" }}</td>
@@ -63,11 +63,11 @@
   </section>
   {% endif %}
 
-  <!-- MLB pitcher props -->
+  <!-- MLB pitcher props — sportsbook lane (two-way odds, de-vigged consensus) -->
   {% if mlb_props %}
   <section>
-    <h2 class="section-title">MLB pitcher props</h2>
-    <p class="muted" style="margin:-6px 0 10px;">Judge decision shown when available, else Claude, else simulator. The Sim / LLM / Judge columns compare all three lanes on the same line.</p>
+    <h2 class="section-title">Sportsbook pitcher props</h2>
+    <p class="muted" style="margin:-6px 0 10px;">Best sportsbook line per prop, edge vs the de-vigged multi-book consensus. Judge decision shown when available, else Claude, else simulator. The Sim / LLM / Judge columns compare all three lanes on the same line.</p>
     <div class="table-scroll">
       <table class="table">
         <thead>
@@ -112,6 +112,47 @@
             </td>
             <td data-label="Stake">
               {{ "%.2f%%"|format(p.kelly_frac * 100) if p.kelly_frac else "—" }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- PrizePicks — DFS pick'em lane (no odds, scored vs the parlay break-even) -->
+  {% if prizepicks_picks %}
+  <section>
+    <h2 class="section-title">PrizePicks best lines</h2>
+    <p class="muted" style="margin:-6px 0 10px;">
+      Separate from the sportsbooks: pick'em projections (no two-way odds) scored off the simulator distribution.
+      <span class="badge">Play</span> clears the {{ "%.1f%%"|format(prizepicks_picks[0].breakeven * 100) }} per-leg break-even for a 2-pick power play; payouts are fixed by parlay size, not price.
+    </p>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Pitcher</th>
+            <th scope="col">Stat</th>
+            <th scope="col">PP line</th>
+            <th scope="col">Pick</th>
+            <th scope="col" title="Simulator probability of the picked side">P(pick)</th>
+            <th scope="col" title="P(pick) minus the parlay break-even">Edge</th>
+            <th scope="col">Play?</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in prizepicks_picks %}
+          <tr>
+            <td data-label="Pitcher"><strong>{{ p.player_name }}</strong></td>
+            <td data-label="Stat">{{ p.market_label }}</td>
+            <td data-label="PP line">{{ p.line }}</td>
+            <td data-label="Pick"><span class="badge">{{ p.pick_side|capitalize }}</span></td>
+            <td data-label="P(pick)">{{ "%.0f%%"|format(p.p_pick * 100) }}</td>
+            <td data-label="Edge">{{ "%+.1f%%"|format(p.edge * 100) }}</td>
+            <td data-label="Play?">
+              {% if p.playable %}<span class="badge">Play</span>{% else %}<span class="muted">pass</span>{% endif %}
             </td>
           </tr>
           {% endfor %}

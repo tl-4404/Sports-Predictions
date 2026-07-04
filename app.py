@@ -294,6 +294,37 @@ def load_mlb_props(db, game_date=None, bets_only=False):
     return props
 
 
+# PrizePicks is a separate surface: pick'em projections (no two-way odds) scored
+# off the simulator distribution vs the parlay break-even. Kept apart from the
+# sportsbook board above so the two are never conflated.
+def load_prizepicks_board(db, game_date=None, playable_only=False):
+    game_date = game_date or date.today().isoformat()
+    try:
+        run = db.execute(
+            "SELECT MAX(run_id) r FROM prizepicks_picks WHERE game_date = ?",
+            (game_date,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return []  # PrizePicks lane never ran
+    if not run or not run["r"]:
+        return []
+    rows = db.execute(
+        """SELECT * FROM prizepicks_picks
+           WHERE game_date = ? AND run_id = ?
+           ORDER BY edge DESC""",
+        (game_date, run["r"]),
+    ).fetchall()
+    picks = []
+    for r in rows:
+        if playable_only and not r["playable"]:
+            continue
+        d = dict(r)
+        d["market_label"] = ("Strikeouts" if r["market"] == "pitcher_strikeouts"
+                             else "Pitcher Outs")
+        picks.append(d)
+    return picks
+
+
 # per-lane real-money scorecard over a trailing window — which lane to trust.
 # ROI is profit (already at each bet's logged Kelly stake) divided by total
 # staked; CLV is the honest "did we beat the close" signal.
@@ -317,8 +348,8 @@ def load_lane_scoreboard(db, days=14):
             (since,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return []
-    order = {"judge": 0, "sim": 1, "llm": 2}
+        rows = []  # sportsbook lanes never ran — still report PrizePicks below
+    order = {"judge": 0, "sim": 1, "llm": 2, "prizepicks": 3}
     board = []
     for r in rows:
         bets = r["bets"] or 0
@@ -332,8 +363,47 @@ def load_lane_scoreboard(db, days=14):
             "avg_clv": r["avg_clv"],
             "clv_beat_rate": r["clv_beat_rate"],
         })
+    pp_row = _prizepicks_lane_row(db, since)
+    if pp_row:
+        board.append(pp_row)
     board.sort(key=lambda x: order.get(x["source"], 9))
     return board
+
+
+# PrizePicks has no two-way price, Kelly stake, or closing line, so it can't
+# share the query above. We score its playable picks against the SAME parlay
+# break-even they were selected on: treat each leg as a flat 1u bet at the
+# break-even's fair decimal odds (1/breakeven). ROI then reads as ">0 iff the
+# lane's realized win rate beat its break-even" — an honest, comparable number.
+# CLV is N/A (no market close) and shows as "—".
+def _prizepicks_lane_row(db, since):
+    try:
+        rows = db.execute(
+            """SELECT p.breakeven, r.pick_won
+               FROM prizepicks_picks p
+               JOIN prizepicks_results r ON r.pick_id = p.id
+               WHERE p.game_date >= ? AND p.playable = 1
+                 AND r.pick_won IS NOT NULL""",
+            (since,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    if not rows:
+        return None
+    n = len(rows)
+    wins = sum(r["pick_won"] for r in rows)
+    pnl = sum((1.0 / r["breakeven"] - 1.0) if r["pick_won"] else -1.0
+              for r in rows)
+    return {
+        "source": "prizepicks",
+        "bets": n,
+        "wins": wins,
+        "hit_rate": wins / n,
+        "pnl": pnl,
+        "roi": pnl / n,          # flat 1u per leg
+        "avg_clv": None,         # no two-way market / closing line
+        "clv_beat_rate": None,
+    }
 
 # card maker helpers (converts american odds to probability)
 def american_to_prob(american):
@@ -451,12 +521,14 @@ def index():
 
     ev_picks = load_ev_picks(db)
     mlb_props = load_mlb_props(db)
+    prizepicks_picks = load_prizepicks_board(db)
     mlb_scoreboard = load_lane_scoreboard(db)
     return render_template(
         "index.html",
         games=games,
         ev_picks=ev_picks,
         mlb_props=mlb_props,
+        prizepicks_picks=prizepicks_picks,
         mlb_scoreboard=mlb_scoreboard,
         leagues=leagues,
         active_league=active_league,

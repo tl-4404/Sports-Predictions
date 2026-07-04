@@ -40,6 +40,34 @@ def _lineup_rates(batter_ids, pitcher_hand):
     return lineup, True
 
 
+def simulate_pitcher(pitcher, opp_lineup_ids, k_park=1.0, k_ump=1.0,
+                     n_sims=N_SIMS):
+    """Simulate one starter end-to-end from serving-time data.
+
+    schedule pitcher + opposing lineup ids -> per-PA rates (CSW-blended K rate,
+    velocity form factor) -> PA-level Monte Carlo. Returns (ks, outs, meta)
+    where meta carries the lineup/form context. Shared by the sim lane
+    (predict_date) and the PrizePicks lane so both read P(over) off the exact
+    same distribution.
+    """
+    profile = data_today.get_pitcher_profile(pitcher["id"])
+    lineup, confirmed = _lineup_rates(opp_lineup_ids, pitcher["hand"])
+    # CSW%-blended K rate + velocity-trend K factor (neutral when the form
+    # cache has no entry for this pitcher)
+    k_rate = form.blended_k_rate(pitcher["id"], profile["k"])
+    k_form = form.velo_k_factor(pitcher["id"])
+    ks, outs = simulator.simulate_starter(
+        {"k": k_rate, "bb": profile["bb"], "hit": profile["hit"]},
+        lineup,
+        recent_pitch_counts=profile["recent_pitch_counts"],
+        k_park=k_park,
+        k_ump=k_ump,
+        k_form=k_form,
+        n_sims=n_sims,
+    )
+    return ks, outs, {"confirmed": confirmed, "k_form": k_form}
+
+
 def predict_date(game_date=None, n_sims=N_SIMS):
     game_date = game_date or date.today().isoformat()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -68,21 +96,9 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                 continue
             opp_lineup_ids = g["away_lineup"] if side == "home" else g["home_lineup"]
             try:
-                profile = data_today.get_pitcher_profile(pitcher["id"])
-                lineup, confirmed = _lineup_rates(opp_lineup_ids, pitcher["hand"])
-                # CSW%-blended K rate + velocity-trend K factor (neutral when
-                # the form cache has no entry for this pitcher)
-                k_rate = form.blended_k_rate(pitcher["id"], profile["k"])
-                k_form = form.velo_k_factor(pitcher["id"])
-                ks, outs = simulator.simulate_starter(
-                    {"k": k_rate, "bb": profile["bb"], "hit": profile["hit"]},
-                    lineup,
-                    recent_pitch_counts=profile["recent_pitch_counts"],
-                    k_park=k_park,
-                    k_ump=k_ump,
-                    k_form=k_form,
-                    n_sims=n_sims,
-                )
+                ks, outs, meta = simulate_pitcher(
+                    pitcher, opp_lineup_ids, k_park=k_park, k_ump=k_ump,
+                    n_sims=n_sims)
             except Exception as e:
                 print(f"[predict] {pitcher['name']}: failed ({e})")
                 continue
@@ -93,8 +109,9 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                 n_logged += _log_market(
                     conn, run_id, game_date, g, pitcher, market, arr, rows)
             print(f"[predict] {pitcher['name']} ({side}, "
-                  f"lineup={'posted' if confirmed else 'league-avg'}, "
-                  f"ump={ump_name or 'TBD'} k={k_ump:.2f}, form k={k_form:.2f}): "
+                  f"lineup={'posted' if meta['confirmed'] else 'league-avg'}, "
+                  f"ump={ump_name or 'TBD'} k={k_ump:.2f}, "
+                  f"form k={meta['k_form']:.2f}): "
                   f"K mean {ks.mean():.2f}, outs mean {outs.mean():.2f}")
 
     print(f"[predict] logged {n_logged} predictions")

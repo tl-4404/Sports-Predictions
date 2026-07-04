@@ -1,3 +1,8 @@
+# Serving / live-betting pipeline — everything needed to run the MLB props
+# pipeline (odds -> sim -> LLM -> PrizePicks -> grade) and the web board.
+# Heavyweight training deps (torch/pybaseball/...) live in
+# requirements-training.txt — not needed for a live run.
+
 # web app
 flask
 flask-login
@@ -8,11 +13,10 @@ requests
 numpy
 pandas
 
-# LLM lanes (facts / Claude predictor / judge) — optional at serving time
-anthropic
+# free odds/PrizePicks scrapers — recommended: cloudscraper gets past Cloudflare
+# bot protection (esp. PrizePicks). Absent, the scrapers fall back to plain
+# requests with browser headers (fine for DraftKings/FanDuel, weaker on PP).
+cloudscraper
 
-# training only (heavyweight — not needed on the serving box)
-torch
-scikit-learn
-joblib
-pybaseball
+# LLM lanes (facts / Claude predictor / judge)
+anthropic

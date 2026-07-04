@@ -6,7 +6,9 @@ Designed so any scheduler can drive it (cron, VPS, GitHub Actions):
     python run_pipeline.py --stage odds    # just refresh prop lines
     python run_pipeline.py --stage predict # just run the simulator
     python run_pipeline.py --stage llm     # facts -> Claude predictor -> judge
+    python run_pipeline.py --stage prizepicks  # scrape PrizePicks -> evaluate
     python run_pipeline.py --stage grade   # grade yesterday's predictions
+    python run_pipeline.py --stage doctor  # preflight: what's live-ready?
     python run_pipeline.py --date 2026-07-02
 
 Suggested cron (adjust to taste):
@@ -26,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "mlb"))
 
-STAGES = ("odds", "predict", "llm", "grade", "all")
+STAGES = ("odds", "predict", "llm", "prizepicks", "grade", "doctor", "all")
 
 
 def main():
@@ -35,6 +37,12 @@ def main():
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (default today; grade defaults to yesterday)")
     ap.add_argument("--sims", type=int, default=10000)
     args = ap.parse_args()
+
+    if args.stage == "doctor":
+        import doctor
+        results = doctor.run()
+        print(doctor.report(results))
+        sys.exit(1 if any(s == doctor.FAIL for _, s, _ in results) else 0)
 
     failures = []
 
@@ -50,11 +58,18 @@ def main():
     elif args.stage == "all":
         print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
+    if args.stage in ("prizepicks", "all"):
+        _run("prizepicks", failures,
+             lambda: __import__("prizepicks").run_all(args.date))
+
     if args.stage in ("grade", "all"):
         grade_date = args.date if args.stage == "grade" else (
             (date.today() - timedelta(days=1)).isoformat())
         _run("grade", failures,
              lambda: __import__("grade").grade_date(grade_date))
+        # grade the PrizePicks lane for the same date
+        _run("prizepicks-grade", failures,
+             lambda: __import__("prizepicks").grade_date(grade_date))
 
     if failures:
         print(f"[pipeline] FAILED stages: {', '.join(failures)}")

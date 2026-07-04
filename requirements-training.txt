@@ -1,0 +1,8 @@
+# Heavyweight, TRAINING-ONLY deps — NOT needed for a live run.
+# Used to build the MLB accuracy caches (park/ump/pitcher-form factors via
+# Statcast/pybaseball) and to train the NBA model (torch). Serving-time code
+# must never import these. Install with:  make install-training
+torch
+scikit-learn
+joblib
+pybaseball
