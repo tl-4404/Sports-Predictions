@@ -1,0 +1,143 @@
+name: One-time updated MLB board extraction
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests pandas
+      - name: Extract current boards and MLB context
+        run: |
+          mkdir -p output
+          python - <<'PY'
+          import csv, json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import requests
+
+          DATE='2026-07-11'; OUT=Path('output')
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 SportsAid audit'})
+          def get(url, params=None):
+              r=s.get(url,params=params,timeout=35); print(r.status_code,len(r.content),r.url); r.raise_for_status(); return r
+
+          # PrizePicks raw board
+          pp=get('https://partner-api.prizepicks.com/projections',{'league_id':'2','per_page':1000,'single_stat':'true'}).json()
+          (OUT/'prizepicks_raw.json').write_text(json.dumps(pp))
+          inc={str(x.get('id')):x for x in pp.get('included',[])}
+          pp_rows=[]
+          for p in pp.get('data',[]):
+              a=p.get('attributes') or {}; start=a.get('start_time') or ''; stat=(a.get('stat_type') or '').lower()
+              if not start.startswith(DATE) or not ('pitcher strikeout' in stat or 'pitching out' in stat or 'pitcher out' in stat): continue
+              rel=p.get('relationships') or {}; pr=rel.get('new_player') or rel.get('player') or {}; pid=str((pr.get('data') or {}).get('id') or '')
+              pa=(inc.get(pid,{}).get('attributes') or {})
+              pp_rows.append({'projection_id':p.get('id'),'player_name':pa.get('name'),'team':pa.get('team'),'start_time':start,'stat_type':a.get('stat_type'),'line':a.get('line_score'),'odds_type':a.get('odds_type'),'description':a.get('description'),'updated_at':a.get('updated_at')})
+          with (OUT/'prizepicks_lines.csv').open('w',newline='') as f:
+              fields=list(pp_rows[0]) if pp_rows else ['projection_id']; w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(pp_rows)
+
+          # Underdog raw board
+          ud=get('https://api.underdogfantasy.com/beta/v5/over_under_lines').json()
+          (OUT/'underdog_raw.json').write_text(json.dumps(ud))
+          ud_rows=[]
+          for l in ud.get('over_under_lines',[]):
+              ou=l.get('over_under') or {}; st=(ou.get('appearance_stat') or {}).get('display_stat') or ''; stl=st.lower()
+              if not ('strikeout' in stl or 'pitching out' in stl or 'outs recorded' in stl): continue
+              opts={o.get('choice'):o for o in l.get('options',[]) if o.get('status')=='active'}
+              name=((opts.get('higher') or opts.get('lower') or {}).get('selection_header'))
+              if not name: continue
+              ud_rows.append({'player_name':name,'stat':st,'line':l.get('stat_value'),'line_type':l.get('line_type'),'higher_price':(opts.get('higher') or {}).get('american_price'),'lower_price':(opts.get('lower') or {}).get('american_price'),'higher_mult':(opts.get('higher') or {}).get('payout_multiplier'),'lower_mult':(opts.get('lower') or {}).get('payout_multiplier'),'updated_at':l.get('updated_at'),'status':l.get('status')})
+          with (OUT/'underdog_lines.csv').open('w',newline='') as f:
+              fields=list(ud_rows[0]) if ud_rows else ['player_name']; w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(ud_rows)
+
+          # MLB schedule + live feeds
+          base='https://statsapi.mlb.com/api/v1'
+          sched=get(base+'/schedule',{'sportId':1,'date':DATE,'hydrate':'probablePitcher,lineups,team,venue'}).json()
+          (OUT/'schedule_raw.json').write_text(json.dumps(sched))
+          games=[]; pitcher_ids={}
+          now=datetime.now(timezone.utc)
+          for d in sched.get('dates',[]):
+              for g in d.get('games',[]):
+                  if g.get('gameType') not in ('R','P','F','D','L','W'): continue
+                  pk=g['gamePk']; feed=get(f'{base}.1/game/{pk}/feed/live').json() if False else get(f'https://statsapi.mlb.com/api/v1.1/game/{pk}/feed/live').json()
+                  gd=feed.get('gameData') or {}; ld=feed.get('liveData') or {}; box=(ld.get('boxscore') or {})
+                  status=(gd.get('status') or g.get('status') or {}); state=status.get('abstractGameState'); detailed=status.get('detailedState')
+                  weather=gd.get('weather') or {}; officials=box.get('officials') or []
+                  hp=next(((o.get('official') or {}).get('fullName') for o in officials if o.get('officialType')=='Home Plate'),None)
+                  teams=gd.get('teams') or {}; probs=gd.get('probablePitchers') or {}; venue=(gd.get('venue') or g.get('venue') or {})
+                  row={'game_pk':pk,'start_time':gd.get('datetime',{}).get('dateTime') or g.get('gameDate'),'state':state,'detailed_state':detailed,'venue':venue.get('name'),'weather_condition':weather.get('condition'),'temperature':weather.get('temp'),'wind':weather.get('wind'),'home_plate_umpire':hp}
+                  for side in ('home','away'):
+                      schedside=g['teams'][side]; team=(teams.get(side) or schedside.get('team') or {})
+                      prob=probs.get(side) or schedside.get('probablePitcher') or {}
+                      batting=((box.get('teams') or {}).get(side) or {}).get('battingOrder') or []
+                      row[f'{side}_team']=team.get('name'); row[f'{side}_team_id']=team.get('id'); row[f'{side}_pitcher']=prob.get('fullName'); row[f'{side}_pitcher_id']=prob.get('id'); row[f'{side}_lineup_ids']=json.dumps(batting); row[f'{side}_lineup_count']=len(batting)
+                      if prob.get('id'): pitcher_ids[int(prob['id'])]={'name':prob.get('fullName'),'team_side':side,'game_pk':pk}
+                  games.append(row)
+          with (OUT/'games.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(games[0])); w.writeheader(); w.writerows(games)
+
+          # Pitcher profiles, recent workload, pitch arsenal
+          prof=[]
+          for pid,meta in pitcher_ids.items():
+              person=get(f'{base}/people/{pid}').json(); hand=(((person.get('people') or [{}])[0].get('pitchHand') or {}).get('code'))
+              season=get(f'{base}/people/{pid}/stats',{'stats':'season','group':'pitching','season':2026,'sportId':1}).json()
+              logs=get(f'{base}/people/{pid}/stats',{'stats':'gameLog','group':'pitching','season':2026,'sportId':1}).json()
+              arsenal=get(f'{base}/people/{pid}/stats',{'stats':'pitchArsenal','group':'pitching','season':2026,'sportId':1}).json()
+              k=bb=h=bf=0
+              for grp in season.get('stats',[]):
+                  for sp in grp.get('splits',[]):
+                      st=sp.get('stat') or {}; k+=int(st.get('strikeOuts') or 0); bb+=int(st.get('baseOnBalls') or 0)+int(st.get('hitByPitch') or 0); h+=int(st.get('hits') or 0); bf+=int(st.get('battersFaced') or 0)
+              starts=[]
+              for grp in logs.get('stats',[]):
+                  for sp in grp.get('splits',[]):
+                      st=sp.get('stat') or {}
+                      if int(st.get('gamesStarted') or 0)<1: continue
+                      starts.append({'date':sp.get('date'),'pitches':st.get('numberOfPitches') or st.get('pitchesThrown'),'bf':st.get('battersFaced'),'ks':st.get('strikeOuts'),'ip':st.get('inningsPitched'),'hits':st.get('hits'),'bb':st.get('baseOnBalls')})
+              starts=sorted(starts,key=lambda x:x.get('date') or '')[-5:]
+              ar=[]
+              for grp in arsenal.get('stats',[]):
+                  for sp in grp.get('splits',[]): ar.append(sp)
+              prof.append({'pitcher_id':pid,'player_name':meta['name'],'hand':hand,'k':k,'bb':bb,'hits':h,'bf':bf,'last5_json':json.dumps(starts),'arsenal_json':json.dumps(ar)})
+          with (OUT/'pitcher_profiles.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(prof[0])); w.writeheader(); w.writerows(prof)
+
+          # Batter rates for all confirmed lineups, overall and vs probable hand
+          batters=[]; seen=set()
+          game_by_pk={g['game_pk']:g for g in games}
+          for g in games:
+              for side in ('home','away'):
+                  opp='away' if side=='home' else 'home'; hand=next((p['hand'] for p in prof if p['pitcher_id']==g.get(f'{opp}_pitcher_id')),None)
+                  sit='vl' if hand=='L' else 'vr'
+                  for bid in json.loads(g.get(f'{side}_lineup_ids') or '[]'):
+                      key=(bid,hand)
+                      if key in seen: continue
+                      seen.add(key)
+                      pdata=get(f'{base}/people/{bid}').json(); person=(pdata.get('people') or [{}])[0]
+                      split=get(f'{base}/people/{bid}/stats',{'stats':'statSplits','group':'hitting','season':2026,'sitCodes':sit,'sportId':1}).json()
+                      overall=get(f'{base}/people/{bid}/stats',{'stats':'season','group':'hitting','season':2026,'sportId':1}).json()
+                      def rates(obj):
+                          k=bb=h=pa=0
+                          for grp in obj.get('stats',[]):
+                              for sp in grp.get('splits',[]):
+                                  st=sp.get('stat') or {}; k+=int(st.get('strikeOuts') or 0); bb+=int(st.get('baseOnBalls') or 0)+int(st.get('hitByPitch') or 0); h+=int(st.get('hits') or 0); pa+=int(st.get('plateAppearances') or 0)
+                          return {'k':k,'bb':bb,'hits':h,'pa':pa}
+                      batters.append({'batter_id':bid,'name':person.get('fullName'),'pitcher_hand':hand,'split_json':json.dumps(rates(split)),'overall_json':json.dumps(rates(overall))})
+          with (OUT/'batter_rates.csv').open('w',newline='') as f:
+              fields=list(batters[0]) if batters else ['batter_id']; w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(batters)
+
+          print('PP',len(pp_rows),'UD',len(ud_rows),'games',len(games),'pitchers',len(prof),'batters',len(batters))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updated-mlb-board-2026-07-11
+          path: output/*
+          retention-days: 1
