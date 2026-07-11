@@ -10,78 +10,172 @@ permissions:
 jobs:
   run-board:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      ODDS_SOURCE: scraper
-      SCRAPE_BOOKS: draftkings,fanduel
-      PRIZEPICKS_LIVE: "1"
-      PRIZEPICKS_URL: https://partner-api.prizepicks.com/projections
-      PRIZEPICKS_MLB_LEAGUE_ID: "2"
-      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-      - name: Install live dependencies
-        run: pip install -r requirements.txt
-      - name: Live-source preflight
-        continue-on-error: true
-        run: python run_pipeline.py --stage doctor
-      - name: Refresh sportsbook anchors
-        continue-on-error: true
-        run: python run_pipeline.py --stage odds --date 2026-07-11
-      - name: Run full simulator board
-        run: python run_pipeline.py --stage predict --date 2026-07-11 --sims 25000
-      - name: Run exact PrizePicks board
-        run: |
-          python - <<'PY'
-          import sys
-          sys.path.insert(0, 'mlb')
-          import prizepicks
-          d = '2026-07-11'
-          prizepicks.refresh(d)
-          prizepicks.evaluate_date(d, n_sims=25000)
-          prizepicks.print_board(d)
-          PY
-      - name: Export full audit tables
+      - name: Install extraction dependencies
+        run: pip install requests pandas cloudscraper
+      - name: Pull raw DFS boards, sportsbook diagnostics, and MLB matchup data
         run: |
           mkdir -p pipeline-output
           python - <<'PY'
-          import csv, sqlite3
+          import csv, json, time
           from pathlib import Path
-          db = sqlite3.connect('sportsaid.db')
-          db.row_factory = sqlite3.Row
-          out = Path('pipeline-output')
-          queries = {
-              'sportsbook_lines.csv': """SELECT game_date,player_name,market,book,line,over_odds,under_odds,as_of FROM prop_lines WHERE game_date='2026-07-11' ORDER BY player_name,market,line,book""",
-              'sim_predictions.csv': """SELECT game_date,player_name,market,line,p_over,mean,book,over_odds,under_odds,market_p_over,edge_over,edge_under,bet_side,kelly_frac,created_at FROM prop_predictions WHERE game_date='2026-07-11' AND source='sim' AND run_id=(SELECT MAX(run_id) FROM prop_predictions WHERE game_date='2026-07-11' AND source='sim') ORDER BY player_name,market,line""",
-              'prizepicks_lines.csv': """SELECT game_date,player_name,market,line,stat_type,projection_id,as_of FROM prizepicks_lines WHERE game_date='2026-07-11' ORDER BY player_name,market,line""",
-              'prizepicks_picks.csv': """SELECT game_date,player_name,market,line,p_over,pick_side,p_pick,breakeven,edge,ev_2,ev_3,playable,mean,created_at FROM prizepicks_picks WHERE game_date='2026-07-11' AND run_id=(SELECT MAX(run_id) FROM prizepicks_picks WHERE game_date='2026-07-11') ORDER BY p_pick DESC""",
+          import requests
+
+          OUT = Path('pipeline-output')
+          DATE = '2026-07-11'
+          S = requests.Session()
+          S.headers.update({'User-Agent':'Mozilla/5.0 SportsAid research audit'})
+
+          def get(url, params=None, timeout=35):
+              r = S.get(url, params=params, timeout=timeout)
+              print('GET', r.status_code, len(r.content), r.url)
+              return r
+
+          # PrizePicks raw JSON: retain odds_type/promo metadata that the current parser drops.
+          pp_url = 'https://partner-api.prizepicks.com/projections'
+          pp = get(pp_url, {'league_id':'2','per_page':1000,'single_stat':'true'})
+          pp.raise_for_status()
+          payload = pp.json()
+          (OUT/'prizepicks_raw.json').write_text(json.dumps(payload))
+          included = {str(x.get('id')): x for x in payload.get('included', [])}
+          pp_rows = []
+          for p in payload.get('data', []):
+              a = p.get('attributes') or {}
+              start = a.get('start_time') or ''
+              stat = (a.get('stat_type') or '').lower()
+              if not start.startswith(DATE) or not ('strikeout' in stat or 'out' in stat):
+                  continue
+              rel = p.get('relationships') or {}
+              player_rel = rel.get('new_player') or rel.get('player') or {}
+              pid = str((player_rel.get('data') or {}).get('id') or '')
+              inc = included.get(pid, {})
+              pa = inc.get('attributes') or {}
+              row = {
+                  'projection_id': p.get('id'), 'player_id': pid,
+                  'player_name': pa.get('name'), 'team': pa.get('team'),
+                  'position': pa.get('position'), 'start_time': start,
+                  'stat_type': a.get('stat_type'), 'line_score': a.get('line_score'),
+                  'odds_type': a.get('odds_type'), 'description': a.get('description'),
+                  'board_time': a.get('board_time'), 'flash_sale_line_score': a.get('flash_sale_line_score'),
+                  'discount_percentage': a.get('discount_percentage'),
+                  'is_promo': a.get('is_promo'), 'updated_at': a.get('updated_at'),
+              }
+              pp_rows.append(row)
+          with (OUT/'prizepicks_raw_lines.csv').open('w', newline='') as f:
+              w=csv.DictWriter(f, fieldnames=list(pp_rows[0]) if pp_rows else ['projection_id'])
+              w.writeheader(); w.writerows(pp_rows)
+          print('PP ROWS', len(pp_rows))
+
+          # Underdog endpoint diagnostics. Save the first valid JSON payload.
+          ud_urls = [
+              'https://api.underdogfantasy.com/beta/v5/over_under_lines',
+              'https://api.underdogfantasy.com/beta/v4/over_under_lines',
+              'https://api.underdogfantasy.com/beta/v3/over_under_lines',
+          ]
+          ud_status=[]
+          for url in ud_urls:
+              try:
+                  r=get(url)
+                  ud_status.append({'url':url,'status':r.status_code,'bytes':len(r.content),'content_type':r.headers.get('content-type')})
+                  if r.ok and 'json' in (r.headers.get('content-type') or ''):
+                      (OUT/'underdog_raw.json').write_text(r.text)
+                      break
+              except Exception as e:
+                  ud_status.append({'url':url,'error':str(e)})
+          (OUT/'underdog_status.json').write_text(json.dumps(ud_status, indent=2))
+
+          # Raw sportsbook endpoint diagnostics; existing parser produced zero rows.
+          endpoints = {
+              'draftkings_raw.json': ('https://sportsbook.draftkings.com/sites/US-SB/api/v5/eventgroups/84240/categories/1031', {'format':'json'}),
+              'fanduel_raw.json': ('https://sbapi.nj.sportsbook.fanduel.com/api/content-managed-page', {'page':'CUSTOM','customPageId':'mlb','_ak':'FhMFpcPWXMeyZxOx','timezone':'America/New_York'}),
           }
-          for name, q in queries.items():
-              rows = db.execute(q).fetchall()
-              with (out/name).open('w', newline='') as f:
-                  if rows:
-                      w = csv.DictWriter(f, fieldnames=rows[0].keys())
-                      w.writeheader(); w.writerows(dict(r) for r in rows)
-              print(f'EXPORT {name}: {len(rows)} rows')
-          print('\n===== LATEST SPORTSBOOK LINES =====')
-          for r in db.execute(queries['sportsbook_lines.csv']): print(dict(r))
-          print('\n===== LATEST SIM PREDICTIONS =====')
-          for r in db.execute(queries['sim_predictions.csv']): print(dict(r))
-          print('\n===== LATEST PRIZEPICKS PICKS =====')
-          for r in db.execute(queries['prizepicks_picks.csv']): print(dict(r))
-          db.close()
+          diag=[]
+          for name,(url,params) in endpoints.items():
+              try:
+                  r=get(url,params)
+                  diag.append({'name':name,'status':r.status_code,'bytes':len(r.content),'content_type':r.headers.get('content-type'),'url':r.url})
+                  if r.ok:
+                      (OUT/name).write_bytes(r.content)
+              except Exception as e:
+                  diag.append({'name':name,'error':str(e)})
+          (OUT/'sportsbook_endpoint_status.json').write_text(json.dumps(diag, indent=2))
+
+          # Canonical slate/probables/lineups plus opponent team split rates.
+          base='https://statsapi.mlb.com/api/v1'
+          sch=get(base+'/schedule', {'sportId':1,'date':DATE,'hydrate':'probablePitcher,lineups,team,venue'}); sch.raise_for_status()
+          schedule=sch.json(); (OUT/'mlb_schedule_raw.json').write_text(json.dumps(schedule))
+          games=[]
+          pitchers=[]
+          team_ids=set()
+          for d in schedule.get('dates',[]):
+              for g in d.get('games',[]):
+                  if g.get('gameType') not in ('R','P','F','D','L','W'): continue
+                  lineups=g.get('lineups') or {}
+                  row={'game_pk':g.get('gamePk'),'start_time':g.get('gameDate'),'venue':(g.get('venue') or {}).get('name'),
+                       'home_team':g['teams']['home']['team']['name'],'home_team_id':g['teams']['home']['team']['id'],
+                       'away_team':g['teams']['away']['team']['name'],'away_team_id':g['teams']['away']['team']['id'],
+                       'home_pitcher':((g['teams']['home'].get('probablePitcher') or {}).get('fullName')),
+                       'home_pitcher_id':((g['teams']['home'].get('probablePitcher') or {}).get('id')),
+                       'away_pitcher':((g['teams']['away'].get('probablePitcher') or {}).get('fullName')),
+                       'away_pitcher_id':((g['teams']['away'].get('probablePitcher') or {}).get('id')),
+                       'home_lineup_count':len(lineups.get('homePlayers') or []),'away_lineup_count':len(lineups.get('awayPlayers') or [])}
+                  games.append(row); team_ids.update([row['home_team_id'],row['away_team_id']])
+                  for side in ('home','away'):
+                      pid=row[f'{side}_pitcher_id']
+                      if pid: pitchers.append((pid,row[f'{side}_pitcher'],row['away_team'] if side=='home' else row['home_team'],row['away_team_id'] if side=='home' else row['home_team_id']))
+          with (OUT/'mlb_games.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(games[0]));w.writeheader();w.writerows(games)
+
+          def stat_totals(payload):
+              k=bb=h=pa=0
+              for grp in payload.get('stats',[]):
+                  for sp in grp.get('splits',[]):
+                      s=sp.get('stat') or {}
+                      k += int(s.get('strikeOuts') or 0); bb += int(s.get('baseOnBalls') or 0)+int(s.get('hitByPitch') or 0)
+                      h += int(s.get('hits') or 0); pa += int(s.get('plateAppearances') or s.get('battersFaced') or 0)
+              return {'k':k,'bb':bb,'hits':h,'pa':pa,'k_rate':k/pa if pa else None,'bb_rate':bb/pa if pa else None,'hit_rate':h/pa if pa else None}
+
+          team_rows=[]
+          for tid in sorted(team_ids):
+              for hand,sit in [('R','vr'),('L','vl')]:
+                  try:
+                      r=get(f'{base}/teams/{tid}/stats',{'stats':'statSplits','group':'hitting','season':2026,'sitCodes':sit,'sportId':1})
+                      data=r.json() if r.ok else {}
+                      vals=stat_totals(data); vals.update({'team_id':tid,'pitcher_hand':hand,'status':r.status_code})
+                      team_rows.append(vals)
+                  except Exception as e: team_rows.append({'team_id':tid,'pitcher_hand':hand,'error':str(e)})
+          with (OUT/'team_hitting_splits.csv').open('w',newline='') as f:
+              fields=sorted({k for r in team_rows for k in r});w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(team_rows)
+
+          pitcher_rows=[]
+          seen=set()
+          for pid,name,opp,oppid in pitchers:
+              if pid in seen: continue
+              seen.add(pid)
+              person=get(f'{base}/people/{pid}').json(); hand=(((person.get('people') or [{}])[0].get('pitchHand') or {}).get('code'))
+              season=get(f'{base}/people/{pid}/stats',{'stats':'season','group':'pitching','season':2026,'sportId':1}).json()
+              log=get(f'{base}/people/{pid}/stats',{'stats':'gameLog','group':'pitching','season':2026,'sportId':1}).json()
+              ps=stat_totals(season)
+              starts=[]
+              for grp in log.get('stats',[]):
+                  for sp in grp.get('splits',[]):
+                      s=sp.get('stat') or {}
+                      if int(s.get('gamesStarted') or 0)<1: continue
+                      starts.append({'date':sp.get('date'),'pitches':s.get('numberOfPitches') or s.get('pitchesThrown'),'bf':s.get('battersFaced'),'ks':s.get('strikeOuts'),'ip':s.get('inningsPitched'),'hits':s.get('hits'),'bb':s.get('baseOnBalls')})
+              starts=sorted(starts,key=lambda x:x['date'] or '')[-5:]
+              pitcher_rows.append({'pitcher_id':pid,'player_name':name,'hand':hand,'opponent':opp,'opponent_team_id':oppid,**ps,'last5_json':json.dumps(starts)})
+          with (OUT/'pitcher_profiles.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(pitcher_rows[0]));w.writeheader();w.writerows(pitcher_rows)
+          print('GAMES',len(games),'PITCHERS',len(pitcher_rows),'TEAM SPLITS',len(team_rows))
           PY
-      - name: Upload pipeline output
+      - name: Upload metadata output
         uses: actions/upload-artifact@v4
         with:
-          name: mlb-board-2026-07-11
-          path: |
-            pipeline-output/*.csv
-            sportsaid.db
+          name: mlb-live-metadata-2026-07-11
+          path: pipeline-output/*
           retention-days: 1
