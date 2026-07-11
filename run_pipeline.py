@@ -5,7 +5,7 @@ Designed so any scheduler can drive it (cron, VPS, GitHub Actions):
     python run_pipeline.py                    # full daily run for today
     python run_pipeline.py --stage odds       # just refresh prop lines
     python run_pipeline.py --stage predict    # just run the simulator
-    python run_pipeline.py --stage llm        # facts -> Claude predictor -> judge
+    python run_pipeline.py --stage llm        # chat-aligned facts -> predictor -> judge
     python run_pipeline.py --stage prizepicks # scrape PrizePicks -> evaluate
     python run_pipeline.py --stage grade      # grade yesterday + update calibration
     python run_pipeline.py --stage calibrate  # rebuild calibration through latest graded date
@@ -55,7 +55,10 @@ def main():
              lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
 
     if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
-        _run("llm", failures, lambda: __import__("llm").run_all(args.date))
+        # llm_saved_pipeline monkey-patches only the LLM research/predict/judge policy.
+        # The simulator remains independent and the judge keeps its bounded authority.
+        _run("llm", failures,
+             lambda: __import__("llm_saved_pipeline").run_all(args.date))
     elif args.stage == "all":
         print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
