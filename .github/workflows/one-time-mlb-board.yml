@@ -1,0 +1,87 @@
+name: One-time MLB board audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  run-board:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ODDS_SOURCE: scraper
+      SCRAPE_BOOKS: draftkings,fanduel
+      PRIZEPICKS_LIVE: "1"
+      PRIZEPICKS_URL: https://partner-api.prizepicks.com/projections
+      PRIZEPICKS_MLB_LEAGUE_ID: "2"
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install live dependencies
+        run: pip install -r requirements.txt
+      - name: Live-source preflight
+        continue-on-error: true
+        run: python run_pipeline.py --stage doctor
+      - name: Refresh sportsbook anchors
+        continue-on-error: true
+        run: python run_pipeline.py --stage odds --date 2026-07-11
+      - name: Run full simulator board
+        run: python run_pipeline.py --stage predict --date 2026-07-11 --sims 25000
+      - name: Run exact PrizePicks board
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'mlb')
+          import prizepicks
+          d = '2026-07-11'
+          prizepicks.refresh(d)
+          prizepicks.evaluate_date(d, n_sims=25000)
+          prizepicks.print_board(d)
+          PY
+      - name: Export full audit tables
+        run: |
+          mkdir -p pipeline-output
+          python - <<'PY'
+          import csv, sqlite3
+          from pathlib import Path
+          db = sqlite3.connect('sportsaid.db')
+          db.row_factory = sqlite3.Row
+          out = Path('pipeline-output')
+          queries = {
+              'sportsbook_lines.csv': """SELECT game_date,player_name,market,book,line,over_odds,under_odds,as_of FROM prop_lines WHERE game_date='2026-07-11' ORDER BY player_name,market,line,book""",
+              'sim_predictions.csv': """SELECT game_date,player_name,market,line,p_over,mean,book,over_odds,under_odds,market_p_over,edge_over,edge_under,bet_side,kelly_frac,created_at FROM prop_predictions WHERE game_date='2026-07-11' AND source='sim' AND run_id=(SELECT MAX(run_id) FROM prop_predictions WHERE game_date='2026-07-11' AND source='sim') ORDER BY player_name,market,line""",
+              'prizepicks_lines.csv': """SELECT game_date,player_name,market,line,stat_type,projection_id,as_of FROM prizepicks_lines WHERE game_date='2026-07-11' ORDER BY player_name,market,line""",
+              'prizepicks_picks.csv': """SELECT game_date,player_name,market,line,p_over,pick_side,p_pick,breakeven,edge,ev_2,ev_3,playable,mean,created_at FROM prizepicks_picks WHERE game_date='2026-07-11' AND run_id=(SELECT MAX(run_id) FROM prizepicks_picks WHERE game_date='2026-07-11') ORDER BY p_pick DESC""",
+          }
+          for name, q in queries.items():
+              rows = db.execute(q).fetchall()
+              with (out/name).open('w', newline='') as f:
+                  if rows:
+                      w = csv.DictWriter(f, fieldnames=rows[0].keys())
+                      w.writeheader(); w.writerows(dict(r) for r in rows)
+              print(f'EXPORT {name}: {len(rows)} rows')
+          print('\n===== LATEST SPORTSBOOK LINES =====')
+          for r in db.execute(queries['sportsbook_lines.csv']): print(dict(r))
+          print('\n===== LATEST SIM PREDICTIONS =====')
+          for r in db.execute(queries['sim_predictions.csv']): print(dict(r))
+          print('\n===== LATEST PRIZEPICKS PICKS =====')
+          for r in db.execute(queries['prizepicks_picks.csv']): print(dict(r))
+          db.close()
+          PY
+      - name: Upload pipeline output
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlb-board-2026-07-11
+          path: |
+            pipeline-output/*.csv
+            sportsaid.db
+          retention-days: 1
