@@ -1,9 +1,11 @@
 """SQLite schema + helpers for the MLB props pipeline.
 
-Three tables, all append-only:
+Core tables are append-only:
   prop_lines       — every odds snapshot we ever fetch (line history, per book)
   prop_predictions — every probability any pipeline (sim / llm / judge) produces
   prop_results     — graded outcomes, filled in the morning after
+  calibration_runs — immutable fitted calibration snapshots
+  calibration_buckets — empirical probability mapping for each snapshot
 
 Everything lives in the same sportsaid.db the Flask app reads.
 """
@@ -32,24 +34,24 @@ def ensure_schema(conn):
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS prop_lines (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      game_date     TEXT NOT NULL,          -- YYYY-MM-DD (local game date)
-      game_pk       INTEGER,                -- MLB StatsAPI gamePk when known
-      event_id      TEXT,                   -- odds provider event id
+      game_date     TEXT NOT NULL,
+      game_pk       INTEGER,
+      event_id      TEXT,
       player_name   TEXT NOT NULL,
-      player_id     INTEGER,                -- MLBAM id when resolved
-      market        TEXT NOT NULL,          -- pitcher_strikeouts | pitcher_outs
+      player_id     INTEGER,
+      market        TEXT NOT NULL,
       book          TEXT NOT NULL,
       line          REAL NOT NULL,
-      over_odds     INTEGER,                -- american
+      over_odds     INTEGER,
       under_odds    INTEGER,
-      as_of         TEXT NOT NULL           -- snapshot time, append-only
+      as_of         TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_prop_lines_lookup
       ON prop_lines(game_date, market, player_name);
 
     CREATE TABLE IF NOT EXISTS prop_predictions (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      run_id        TEXT NOT NULL,          -- one pipeline invocation
+      run_id        TEXT NOT NULL,
       created_at    TEXT NOT NULL,
       game_date     TEXT NOT NULL,
       game_pk       INTEGER,
@@ -57,18 +59,18 @@ def ensure_schema(conn):
       player_id     INTEGER,
       market        TEXT NOT NULL,
       line          REAL NOT NULL,
-      source        TEXT NOT NULL,          -- 'sim' | 'llm' | 'judge'
-      p_over        REAL NOT NULL,          -- our probability the OVER hits
-      mean          REAL,                   -- distribution mean (Ks or outs)
-      book          TEXT,                   -- book whose price we evaluated
+      source        TEXT NOT NULL,
+      p_over        REAL NOT NULL,
+      mean          REAL,
+      book          TEXT,
       over_odds     INTEGER,
       under_odds    INTEGER,
-      market_p_over REAL,                   -- de-vigged market prob at bet time
-      edge_over     REAL,                   -- p_over - market_p_over
+      market_p_over REAL,
+      edge_over     REAL,
       edge_under    REAL,
-      bet_side      TEXT,                   -- 'over' | 'under' | NULL (no bet)
-      kelly_frac    REAL,                   -- fractional-kelly suggested stake (of bankroll)
-      rationale     TEXT                    -- llm/judge reasoning, NULL for sim
+      bet_side      TEXT,
+      kelly_frac    REAL,
+      rationale     TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_prop_pred_lookup
       ON prop_predictions(game_date, market, player_name, source);
@@ -77,15 +79,49 @@ def ensure_schema(conn):
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       prediction_id INTEGER NOT NULL REFERENCES prop_predictions(id),
       graded_at     TEXT NOT NULL,
-      actual        REAL,                   -- actual Ks or outs; NULL = void (no start)
-      outcome       TEXT,                   -- 'over' | 'under' | 'push' | 'void'
-      bet_won       INTEGER,                -- 1/0/NULL (NULL when no bet or push/void)
-      profit_units  REAL,                   -- at the logged kelly stake, in bankroll units
-      closing_p_over REAL,                  -- de-vigged consensus at last snapshot before pitch
-      clv           REAL                    -- (our bet-side prob edge vs close); >0 = beat the close
+      actual        REAL,
+      outcome       TEXT,
+      bet_won       INTEGER,
+      profit_units  REAL,
+      closing_p_over REAL,
+      clv           REAL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_prop_results_pred
       ON prop_results(prediction_id);
+
+    CREATE TABLE IF NOT EXISTS calibration_runs (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id            TEXT NOT NULL,
+      created_at        TEXT NOT NULL,
+      through_date      TEXT NOT NULL,
+      market            TEXT NOT NULL,
+      source            TEXT NOT NULL,
+      sample_size       INTEGER NOT NULL,
+      mode              TEXT NOT NULL,
+      brier_score       REAL,
+      log_loss          REAL,
+      calibration_error REAL,
+      metadata_json     TEXT,
+      UNIQUE(run_id, market, source)
+    );
+    CREATE INDEX IF NOT EXISTS idx_calibration_runs_lookup
+      ON calibration_runs(market, source, through_date, created_at);
+
+    CREATE TABLE IF NOT EXISTS calibration_buckets (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id                 TEXT NOT NULL,
+      market                 TEXT NOT NULL,
+      source                 TEXT NOT NULL,
+      bucket_low             REAL NOT NULL,
+      bucket_high            REAL NOT NULL,
+      sample_size            INTEGER NOT NULL,
+      mean_predicted         REAL NOT NULL,
+      actual_rate            REAL NOT NULL,
+      calibrated_probability REAL NOT NULL,
+      UNIQUE(run_id, market, source, bucket_low)
+    );
+    CREATE INDEX IF NOT EXISTS idx_calibration_buckets_lookup
+      ON calibration_buckets(run_id, market, source, bucket_low);
     """)
     conn.commit()
 
