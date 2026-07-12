@@ -1,0 +1,79 @@
+name: One-time grade MLB July 11 board
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Pull official final starter lines
+        run: |
+          mkdir -p output
+          python - <<'PY'
+          import csv, json, requests
+          from pathlib import Path
+
+          DATE='2026-07-11'; OUT=Path('output')
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 SportsAid grading audit'})
+          base='https://statsapi.mlb.com/api/v1'
+          sched=s.get(base+'/schedule',params={'sportId':1,'date':DATE,'hydrate':'team,probablePitcher'},timeout=30).json()
+          rows=[]
+          for d in sched.get('dates',[]):
+            for g in d.get('games',[]):
+              pk=g['gamePk']
+              feed=s.get(f'https://statsapi.mlb.com/api/v1.1/game/{pk}/feed/live',timeout=30).json()
+              gd=feed.get('gameData') or {}; ld=feed.get('liveData') or {}
+              state=(gd.get('status') or {}).get('abstractGameState')
+              detail=(gd.get('status') or {}).get('detailedState')
+              teams=gd.get('teams') or {}
+              linescore=ld.get('linescore') or {}
+              box=ld.get('boxscore') or {}
+              for side in ('away','home'):
+                opp='home' if side=='away' else 'away'
+                tbox=((box.get('teams') or {}).get(side) or {})
+                players=tbox.get('players') or {}
+                for p in players.values():
+                  st=((p.get('stats') or {}).get('pitching') or {})
+                  if int(st.get('gamesStarted') or 0) != 1:
+                    continue
+                  person=p.get('person') or {}
+                  ip=str(st.get('inningsPitched') or '0.0')
+                  whole, frac=(ip.split('.')+['0'])[:2]
+                  outs=int(whole)*3 + (int(frac) if frac.isdigit() else 0)
+                  rows.append({
+                    'game_pk':pk,'game_state':state,'detailed_state':detail,
+                    'team':(teams.get(side) or {}).get('name'),'opponent':(teams.get(opp) or {}).get('name'),
+                    'player_id':person.get('id'),'player_name':person.get('fullName'),
+                    'innings_pitched':ip,'outs':outs,'strikeouts':int(st.get('strikeOuts') or 0),
+                    'pitches':int(st.get('numberOfPitches') or 0),'batters_faced':int(st.get('battersFaced') or 0),
+                    'hits':int(st.get('hits') or 0),'walks':int(st.get('baseOnBalls') or 0),
+                    'runs':int(st.get('runs') or 0),'earned_runs':int(st.get('earnedRuns') or 0),
+                    'team_score':(((linescore.get('teams') or {}).get(side) or {}).get('runs')),
+                    'opp_score':(((linescore.get('teams') or {}).get(opp) or {}).get('runs')),
+                  })
+          rows=sorted(rows,key=lambda r:(r['game_pk'],r['team'] or ''))
+          with (OUT/'official_starter_results.csv').open('w',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0]) if rows else ['player_name'])
+            w.writeheader(); w.writerows(rows)
+          (OUT/'official_starter_results.json').write_text(json.dumps(rows,indent=2))
+          print('OFFICIAL_STARTER_RESULTS_BEGIN')
+          for r in rows:
+            print(f"{r['player_name']}|{r['team']}|vs {r['opponent']}|{r['innings_pitched']} IP|{r['outs']} outs|{r['strikeouts']} K|{r['pitches']} pitches|{r['earned_runs']} ER|{r['game_state']} {r['detailed_state']}")
+          print('OFFICIAL_STARTER_RESULTS_END')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-mlb-starter-results-2026-07-11
+          path: output/*
+          retention-days: 2
