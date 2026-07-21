@@ -160,14 +160,22 @@ def insert_prediction(conn, row):
 
 
 def latest_lines(conn, game_date, market=None):
-    """Most recent snapshot per (player, market, book, line) for a date."""
+    """Return only lines present in each book's newest player/market snapshot.
+
+    The old implementation partitioned by ``line``. When a book moved a prop
+    from (for example) 5.5 to 4.5, both historical thresholds survived as
+    "latest" rows and could be recommended. A fetch writes all rows from the
+    same book snapshot with one ``as_of`` value, so selecting the newest
+    timestamp per (player, market, book) preserves every currently offered
+    ladder while dropping thresholds that disappeared in a later refresh.
+    """
     q = """
       SELECT * FROM prop_lines pl
       WHERE pl.game_date = ?
         AND pl.as_of = (
           SELECT MAX(as_of) FROM prop_lines
           WHERE game_date = pl.game_date AND player_name = pl.player_name
-            AND market = pl.market AND book = pl.book AND line = pl.line
+            AND market = pl.market AND book = pl.book
         )
     """
     args = [game_date]
