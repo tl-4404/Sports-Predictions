@@ -60,7 +60,6 @@ STAT_MAP = {
 
 POWER_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 37.5}
 TARGET_LEGS = 2
-# A barely positive point estimate is not robust enough for real-money use.
 PLAYABLE_MARGIN = float(os.getenv("PRIZEPICKS_PLAYABLE_MARGIN", "0.04"))
 LINE_MAX_AGE_MINUTES = int(os.getenv("PRIZEPICKS_LINE_MAX_AGE_MINUTES", "30"))
 
@@ -238,22 +237,18 @@ def _insert_lines(conn, rows):
 
 
 def _latest_lines(conn, game_date):
-    """Return only projections present in the newest player/market snapshot.
+    """Return rows from the newest complete PrizePicks board snapshot.
 
-    A line value is deliberately not part of the partition. If PrizePicks moves
-    a projection from 5.5 to 4.5, the former 5.5 row must disappear from the
-    active board. Multiple current ladder rows are preserved because every row
-    in a single fetch shares the same ``as_of`` timestamp.
+    Each refresh stamps the full board with one ``as_of`` value. Selecting that
+    newest batch drops both moved thresholds and players whose projections were
+    removed. Partitioning by player or line would keep disappeared rows alive.
     """
     return conn.execute(
-        """SELECT * FROM prizepicks_lines pl
-           WHERE pl.game_date = ?
-             AND pl.as_of = (
-               SELECT MAX(as_of) FROM prizepicks_lines
-               WHERE game_date = pl.game_date
-                 AND player_name = pl.player_name
-                 AND market = pl.market)""",
-        (game_date,)).fetchall()
+        """SELECT * FROM prizepicks_lines
+           WHERE game_date = ?
+             AND as_of = (
+               SELECT MAX(as_of) FROM prizepicks_lines WHERE game_date = ?)""",
+        (game_date, game_date)).fetchall()
 
 
 def _latest_snapshot_time(conn, game_date):
