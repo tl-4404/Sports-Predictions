@@ -43,14 +43,11 @@ from factors import park_k_factor, ump_k_factor
 from predict import simulate_pitcher, N_SIMS
 
 BASE_DIR = Path(__file__).resolve().parent
-# first existing path wins: your own fixture in cache/, else the shipped sample
 STUB_PATHS = (
     BASE_DIR / "cache" / "stub_prizepicks_lines.json",
     BASE_DIR / "fixtures" / "stub_prizepicks_lines.sample.json",
 )
 
-# PrizePicks stat_type -> our market key. PrizePicks labels vary over time;
-# keep this map lenient (lower-cased, trimmed on lookup).
 STAT_MAP = {
     "pitcher strikeouts": "pitcher_strikeouts",
     "strikeouts": "pitcher_strikeouts",
@@ -61,46 +58,29 @@ STAT_MAP = {
     "outs recorded": "pitcher_outs",
 }
 
-# PrizePicks "Power Play" (all legs must hit) payout multipliers by leg count.
-# CONFIGURABLE — PrizePicks changes these and runs promos; verify against the
-# current board. Flex plays (partial payouts on a miss) are not modelled in v1,
-# nor are "demon"/"goblin" lines with boosted/reduced multipliers.
 POWER_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 37.5}
-TARGET_LEGS = 2          # reference play size for the single-leg "playable" bar
-PLAYABLE_MARGIN = 0.0    # require p_pick >= breakeven + this margin to flag
+TARGET_LEGS = 2
+# A barely positive point estimate is not robust enough for real-money use.
+PLAYABLE_MARGIN = float(os.getenv("PRIZEPICKS_PLAYABLE_MARGIN", "0.04"))
+LINE_MAX_AGE_MINUTES = int(os.getenv("PRIZEPICKS_LINE_MAX_AGE_MINUTES", "30"))
 
-
-# ── payout / break-even math ─────────────────────────────────────────────────
 
 def power_breakeven(n_legs, payouts=None):
-    """Per-leg win prob at which an all-hit N-leg power play breaks even.
-
-    An N-leg power paying M x returns M * p**N in units of stake, so
-    break-even is p = (1/M)**(1/N).
-    """
+    """Per-leg win probability at which an all-hit power play breaks even."""
     payouts = payouts or POWER_PAYOUTS
     return (1.0 / payouts[n_legs]) ** (1.0 / n_legs)
 
 
 def power_ev(p, n_legs, payouts=None):
-    """Net EV per unit stake of an N-leg power whose legs each hit with prob p
-    (assumes independence). Positive means +EV."""
+    """Net EV per unit stake, assuming independent equal-probability legs."""
     payouts = payouts or POWER_PAYOUTS
     return payouts[n_legs] * (p ** n_legs) - 1.0
 
 
-# ── fetchers (live scrape + offline stub) ────────────────────────────────────
-
 class PrizePicksFetcher:
-    """Scrapes PrizePicks' public projections endpoint (JSON:API format).
-
-    Opt-in via PRIZEPICKS_LIVE — scraping is against PrizePicks' ToS and the
-    endpoint sits behind Cloudflare, so this is best-effort. league_id and the
-    URL are configurable because both drift over time.
-    """
+    """Best-effort fetcher for PrizePicks' public projections endpoint."""
 
     def __init__(self, league_id=None, base=None):
-        # MLB league id on PrizePicks (drifts over time — override via env)
         self.league_id = league_id or os.getenv("PRIZEPICKS_MLB_LEAGUE_ID", "2")
         self.base = base or os.getenv(
             "PRIZEPICKS_URL", "https://api.prizepicks.com/projections")
@@ -116,11 +96,7 @@ class PrizePicksFetcher:
 
 
 class StubPrizePicksFetcher:
-    """Offline stand-in: serves fixture projections from a JSON file.
-
-    Fixture format: [{"player_name": ..., "market"|"stat_type": ...,
-    "line": ..., "player_id": ..., "projection_id": ...}, ...]
-    """
+    """Offline stand-in serving fixture projections from JSON."""
 
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
@@ -150,8 +126,7 @@ class StubPrizePicksFetcher:
 
 
 def _parse_projections(payload, game_date, as_of):
-    """Turn a PrizePicks JSON:API payload into prizepicks_lines row dicts."""
-    # player id -> name from the `included` sidecar
+    """Turn a PrizePicks JSON:API payload into stored line rows."""
     names = {}
     for inc in payload.get("included", []):
         if inc.get("type") in ("new_player", "player"):
@@ -163,7 +138,6 @@ def _parse_projections(payload, game_date, as_of):
         market = STAT_MAP.get((attr.get("stat_type") or "").strip().lower())
         if not market:
             continue
-        # projections can span several days — keep only this game date
         start = attr.get("start_time") or ""
         if start and not start.startswith(game_date):
             continue
@@ -187,13 +161,12 @@ def _parse_projections(payload, game_date, as_of):
 
 
 def get_fetcher():
-    """Live scraper only when explicitly opted in; stub otherwise."""
-    if os.getenv("PRIZEPICKS_LIVE"):
+    """Use the live fetcher only for an explicit truthy opt-in value."""
+    live = os.getenv("PRIZEPICKS_LIVE", "").strip().lower()
+    if live in {"1", "true", "yes", "on"}:
         return PrizePicksFetcher()
     return StubPrizePicksFetcher()
 
-
-# ── schema + storage (all append-only, separate from the two-way tables) ─────
 
 def ensure_schema(conn):
     conn.executescript("""
@@ -202,11 +175,11 @@ def ensure_schema(conn):
       game_date     TEXT NOT NULL,
       player_name   TEXT NOT NULL,
       player_id     INTEGER,
-      market        TEXT NOT NULL,          -- pitcher_strikeouts | pitcher_outs
+      market        TEXT NOT NULL,
       line          REAL NOT NULL,
-      stat_type     TEXT,                   -- raw PrizePicks label
-      projection_id TEXT,                   -- PrizePicks projection id
-      as_of         TEXT NOT NULL           -- snapshot time, append-only
+      stat_type     TEXT,
+      projection_id TEXT,
+      as_of         TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_pp_lines_lookup
       ON prizepicks_lines(game_date, market, player_name);
@@ -220,16 +193,16 @@ def ensure_schema(conn):
       player_name   TEXT NOT NULL,
       player_id     INTEGER,
       market        TEXT NOT NULL,
-      line          REAL NOT NULL,          -- PrizePicks projection
-      p_over        REAL NOT NULL,          -- sim P(over the PP line)
-      pick_side     TEXT NOT NULL,          -- 'more' | 'less'
-      p_pick        REAL NOT NULL,          -- sim prob of the chosen side
-      breakeven     REAL NOT NULL,          -- per-leg break-even (TARGET_LEGS)
-      edge          REAL NOT NULL,          -- p_pick - breakeven
-      ev_2          REAL,                   -- per-leg EV if built as a 2-pick
-      ev_3          REAL,                   -- per-leg EV if built as a 3-pick
-      playable      INTEGER NOT NULL,       -- 1 when edge >= PLAYABLE_MARGIN
-      mean          REAL                    -- sim distribution mean
+      line          REAL NOT NULL,
+      p_over        REAL NOT NULL,
+      pick_side     TEXT NOT NULL,
+      p_pick        REAL NOT NULL,
+      breakeven     REAL NOT NULL,
+      edge          REAL NOT NULL,
+      ev_2          REAL,
+      ev_3          REAL,
+      playable      INTEGER NOT NULL,
+      mean          REAL
     );
     CREATE INDEX IF NOT EXISTS idx_pp_picks_lookup
       ON prizepicks_picks(game_date, market, player_name);
@@ -238,9 +211,9 @@ def ensure_schema(conn):
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       pick_id       INTEGER NOT NULL REFERENCES prizepicks_picks(id),
       graded_at     TEXT NOT NULL,
-      actual        REAL,                   -- actual Ks or outs; NULL = void
-      outcome       TEXT,                   -- 'more' | 'less' | 'push' | 'void'
-      pick_won      INTEGER                 -- 1/0/NULL (NULL on push/void)
+      actual        REAL,
+      outcome       TEXT,
+      pick_won      INTEGER
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_results_pick
       ON prizepicks_results(pick_id);
@@ -265,22 +238,50 @@ def _insert_lines(conn, rows):
 
 
 def _latest_lines(conn, game_date):
-    """Most recent snapshot per (player, market, line) for a date."""
+    """Return only projections present in the newest player/market snapshot.
+
+    A line value is deliberately not part of the partition. If PrizePicks moves
+    a projection from 5.5 to 4.5, the former 5.5 row must disappear from the
+    active board. Multiple current ladder rows are preserved because every row
+    in a single fetch shares the same ``as_of`` timestamp.
+    """
     return conn.execute(
         """SELECT * FROM prizepicks_lines pl
            WHERE pl.game_date = ?
              AND pl.as_of = (
                SELECT MAX(as_of) FROM prizepicks_lines
-               WHERE game_date = pl.game_date AND player_name = pl.player_name
-                 AND market = pl.market AND line = pl.line)""",
+               WHERE game_date = pl.game_date
+                 AND player_name = pl.player_name
+                 AND market = pl.market)""",
         (game_date,)).fetchall()
+
+
+def _latest_snapshot_time(conn, game_date):
+    row = conn.execute(
+        "SELECT MAX(as_of) AS as_of FROM prizepicks_lines WHERE game_date=?",
+        (game_date,),
+    ).fetchone()
+    return row["as_of"] if row else None
+
+
+def _snapshot_is_fresh(conn, game_date):
+    """Require a recent live-board snapshot for today's real-money run."""
+    if game_date != date.today().isoformat():
+        return True
+    stamp = _latest_snapshot_time(conn, game_date)
+    if not stamp:
+        return False
+    try:
+        observed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    age_minutes = (datetime.now(timezone.utc) - observed).total_seconds() / 60.0
+    return 0 <= age_minutes <= LINE_MAX_AGE_MINUTES
 
 
 def _norm(name):
     return "".join(ch for ch in (name or "").lower() if ch.isalpha())
 
-
-# ── stages ───────────────────────────────────────────────────────────────────
 
 def refresh(game_date=None):
     """Fetch today's PrizePicks projections and append them to line history."""
@@ -295,11 +296,19 @@ def refresh(game_date=None):
 
 
 def evaluate_date(game_date=None, n_sims=N_SIMS):
-    """Score every posted PrizePicks line off the simulator distribution."""
+    """Score every currently posted PrizePicks line."""
     game_date = game_date or date.today().isoformat()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conn = db.connect()
     ensure_schema(conn)
+
+    if not _snapshot_is_fresh(conn, game_date):
+        print(
+            f"[prizepicks] refusing to evaluate {game_date}: "
+            f"no projection snapshot within {LINE_MAX_AGE_MINUTES} minutes"
+        )
+        conn.close()
+        return 0
 
     lines_by_player = {}
     for row in _latest_lines(conn, game_date):
@@ -323,7 +332,7 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
                 continue
             opp_lineup_ids = g["away_lineup"] if side == "home" else g["home_lineup"]
             try:
-                ks, outs, _ = simulate_pitcher(
+                ks, outs, meta = simulate_pitcher(
                     pitcher, opp_lineup_ids, k_park=k_park, k_ump=k_ump,
                     n_sims=n_sims)
             except Exception as e:
@@ -334,13 +343,18 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
                 arr = arrays.get(r["market"])
                 if arr is None:
                     continue
-                n_logged += _log_pick(conn, run_id, game_date, g, pitcher, r, arr)
+                n_logged += _log_pick(
+                    conn, run_id, game_date, g, pitcher, r, arr,
+                    allow_play=bool(meta.get("confirmed")),
+                )
     print(f"[prizepicks] logged {n_logged} picks")
     conn.close()
     return n_logged
 
 
-def _log_pick(conn, run_id, game_date, game, pitcher, line_row, arr):
+def _log_pick(
+    conn, run_id, game_date, game, pitcher, line_row, arr, allow_play=True
+):
     line = line_row["line"]
     p_over, p_under, _ = simulator.prob_over(arr, line)
     if p_over >= 0.5:
@@ -349,6 +363,7 @@ def _log_pick(conn, run_id, game_date, game, pitcher, line_row, arr):
         pick_side, p_pick = "less", p_under
     be = power_breakeven(TARGET_LEGS)
     edge = p_pick - be
+    playable = bool(allow_play and edge >= PLAYABLE_MARGIN)
     conn.execute(
         """INSERT INTO prizepicks_picks
            (run_id, created_at, game_date, game_pk, player_name, player_id,
@@ -358,7 +373,7 @@ def _log_pick(conn, run_id, game_date, game, pitcher, line_row, arr):
         (run_id, db.utcnow(), game_date, game["game_pk"], pitcher["name"],
          pitcher.get("id"), line_row["market"], line, p_over, pick_side,
          p_pick, be, edge, power_ev(p_pick, 2), power_ev(p_pick, 3),
-         1 if edge >= PLAYABLE_MARGIN else 0, float(arr.mean())))
+         1 if playable else 0, float(arr.mean())))
     conn.commit()
     return 1
 
@@ -413,12 +428,13 @@ def grade_date(game_date=None):
 
 
 def run_all(game_date=None):
-    """refresh -> evaluate for the given date."""
-    refresh(game_date)
+    """Refresh and evaluate only when a current snapshot was stored."""
+    n = refresh(game_date)
+    if n <= 0:
+        print("[prizepicks] refresh returned no projections; evaluation aborted")
+        return 0
     return evaluate_date(game_date)
 
-
-# ── board renderer (stdout) ──────────────────────────────────────────────────
 
 def print_board(game_date=None):
     game_date = game_date or date.today().isoformat()
