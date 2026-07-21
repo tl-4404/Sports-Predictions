@@ -2,7 +2,7 @@
 
 No network, no pytest:  python tests/test_prizepicks_offline.py
 
-Covers payout math, schema, line ingestion, stale-line replacement, conservative
+Covers payout math, schema, complete-board snapshot replacement, conservative
 playability gates, evaluation, and next-day grading. StatsAPI is monkeypatched.
 """
 import os
@@ -40,10 +40,55 @@ check("EV positive above break-even", pp.power_ev(0.62, 2) > 0)
 check("EV negative below break-even", pp.power_ev(0.55, 2) < 0)
 check("default play margin is conservative", pp.PLAYABLE_MARGIN >= 0.04)
 
+print("prizepicks complete-board snapshots:")
+snapshot_tmp = tempfile.mkdtemp()
+db.DB_PATH = Path(snapshot_tmp) / "snapshot.db"
+snapshot_conn = db.connect()
+pp.ensure_schema(snapshot_conn)
+DATE = "2026-07-01"
+pp._insert_lines(snapshot_conn, [
+    {
+        "game_date": DATE,
+        "player_name": "Moved Line",
+        "player_id": None,
+        "market": "pitcher_strikeouts",
+        "line": 5.5,
+        "stat_type": "Pitcher Strikeouts",
+        "projection_id": "move-1",
+        "as_of": "2026-07-01T10:00:00+00:00",
+    },
+    {
+        "game_date": DATE,
+        "player_name": "Removed Player",
+        "player_id": None,
+        "market": "pitcher_strikeouts",
+        "line": 6.5,
+        "stat_type": "Pitcher Strikeouts",
+        "projection_id": "removed-1",
+        "as_of": "2026-07-01T10:00:00+00:00",
+    },
+])
+pp._insert_lines(snapshot_conn, [{
+    "game_date": DATE,
+    "player_name": "Moved Line",
+    "player_id": None,
+    "market": "pitcher_strikeouts",
+    "line": 4.5,
+    "stat_type": "Pitcher Strikeouts",
+    "projection_id": "move-1",
+    "as_of": "2026-07-01T10:05:00+00:00",
+}])
+active_snapshot = pp._latest_lines(snapshot_conn, DATE)
+check("old moved threshold removed",
+      len(active_snapshot) == 1 and active_snapshot[0]["line"] == 4.5,
+      f"({[(row['player_name'], row['line']) for row in active_snapshot]})")
+check("removed player disappears from active board",
+      all(row["player_name"] != "Removed Player" for row in active_snapshot))
+snapshot_conn.close()
+
 print("prizepicks pipeline (temp db, mocked network):")
 tmp = tempfile.mkdtemp()
 db.DB_PATH = Path(tmp) / "test.db"
-DATE = "2026-07-01"
 
 
 def fake_schedule(game_date=None):
@@ -88,27 +133,6 @@ ace_outs_line = [
     if line["player_name"] == "Ace Example" and line["market"] == "pitcher_outs"
 ][0]
 check("PP outs line kept at its own number (16.5)", ace_outs_line["line"] == 16.5)
-
-# A moved threshold must replace the old value rather than coexist with it.
-pp._insert_lines(conn, [{
-    "game_date": DATE, "player_name": "Moved Line", "player_id": None,
-    "market": "pitcher_strikeouts", "line": 5.5,
-    "stat_type": "Pitcher Strikeouts", "projection_id": "move-1",
-    "as_of": "2026-07-01T10:00:00+00:00",
-}])
-pp._insert_lines(conn, [{
-    "game_date": DATE, "player_name": "Moved Line", "player_id": None,
-    "market": "pitcher_strikeouts", "line": 4.5,
-    "stat_type": "Pitcher Strikeouts", "projection_id": "move-1",
-    "as_of": "2026-07-01T10:05:00+00:00",
-}])
-active_moved = [
-    line for line in pp._latest_lines(conn, DATE)
-    if line["player_name"] == "Moved Line"
-]
-check("old moved line removed from active board",
-      len(active_moved) == 1 and active_moved[0]["line"] == 4.5,
-      f"({[line['line'] for line in active_moved]})")
 
 n_picks = pp.evaluate_date(DATE, n_sims=6000)
 check("picks logged for both starters", n_picks == 4, f"(n={n_picks})")
@@ -225,7 +249,6 @@ check("unmapped stat_type excluded",
       all(row["market"] in ("pitcher_strikeouts", "pitcher_outs")
           for row in parsed))
 
-# A string value of "0" must not accidentally enable the live network path.
 os.environ["PRIZEPICKS_LIVE"] = "0"
 check("PRIZEPICKS_LIVE=0 remains offline",
       isinstance(pp.get_fetcher(), pp.StubPrizePicksFetcher))
