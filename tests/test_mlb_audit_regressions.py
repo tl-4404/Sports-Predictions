@@ -37,8 +37,15 @@ base = {
     "over_odds": -110,
     "under_odds": -110,
 }
+removed = {
+    **base,
+    "player_name": "Removed Player",
+    "player_id": 11,
+}
 db.insert_lines(conn, [
     {**base, "book": "Book A", "line": 5.5,
+     "as_of": "2026-07-20T17:00:00+00:00"},
+    {**removed, "book": "Book A", "line": 6.5,
      "as_of": "2026-07-20T17:00:00+00:00"},
     {**base, "book": "Book A", "line": 4.5,
      "as_of": "2026-07-20T17:05:00+00:00"},
@@ -52,6 +59,8 @@ active = db.latest_lines(conn, "2026-07-20")
 book_a = sorted(row["line"] for row in active if row["book"] == "Book A")
 book_b = sorted(row["line"] for row in active if row["book"] == "Book B")
 check("obsolete Book A threshold removed", book_a == [3.5, 4.5], f"({book_a})")
+check("removed Book A player disappears",
+      all(row["player_name"] != "Removed Player" for row in active))
 check("independent Book B snapshot retained", book_b == [5.5], f"({book_b})")
 
 print("calibration sample hygiene:")
