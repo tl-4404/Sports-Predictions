@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "sportsaid.db"
-
-# markets we predict; keys match The Odds API market names
 MARKETS = ("pitcher_strikeouts", "pitcher_outs")
 
 
@@ -160,14 +158,20 @@ def insert_prediction(conn, row):
 
 
 def latest_lines(conn, game_date, market=None):
-    """Most recent snapshot per (player, market, book, line) for a date."""
+    """Return rows from each book's newest complete board snapshot.
+
+    Every fetcher stamps all rows from one book with the same ``as_of`` value.
+    Selecting the latest timestamp per book drops moved thresholds and players
+    whose markets disappeared, while preserving all ladders offered in that
+    current snapshot. Partitioning by player or numeric line would retain stale
+    rows indefinitely.
+    """
     q = """
       SELECT * FROM prop_lines pl
       WHERE pl.game_date = ?
         AND pl.as_of = (
           SELECT MAX(as_of) FROM prop_lines
-          WHERE game_date = pl.game_date AND player_name = pl.player_name
-            AND market = pl.market AND book = pl.book AND line = pl.line
+          WHERE game_date = pl.game_date AND book = pl.book
         )
     """
     args = [game_date]

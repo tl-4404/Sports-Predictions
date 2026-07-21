@@ -1,26 +1,19 @@
 """PrizePicks lane for the MLB pitcher-props pipeline.
 
-PrizePicks is a DFS pick'em product, NOT a sportsbook — it posts a single
-projection per player+stat and you pick more/less, with the "vig" baked into a
-fixed parlay payout structure (2-pick, 3-pick ... power plays). There are no
-two-way American prices, so nothing to de-vig and no single-leg price to Kelly
-against. This lane therefore evaluates PrizePicks lines a different way:
+PrizePicks is a DFS pick'em product, NOT a sportsbook. It posts projections and
+users choose More/Less, with payout terms determined by the lineup. This lane:
 
-  * it re-uses the simulator's full outcome distribution (via
-    predict.simulate_pitcher) to read P(over) at PrizePicks' EXACT line, which
-    is often a different number than the sportsbook line, and
-  * it compares that probability against the per-leg break-even implied by the
-    power-play payout table: for an N-leg power paying M x, every leg must clear
-    (1/M)^(1/N) just to break even. Legs above that bar are +EV to include.
+  * evaluates the simulator distribution at PrizePicks' exact current line;
+  * keeps standard, goblin, and demon lines distinct using ``odds_type``; and
+  * automatically evaluates only STANDARD projections because goblin/demon
+    payouts are lineup-specific and cannot safely use the standard break-even.
 
-The sportsbook lane stays the sharp/consensus + CLV anchor; this lane is the
-soft DFS surface where the picks actually get placed. Output lands in its own
-append-only tables (prizepicks_lines / prizepicks_picks / prizepicks_results)
-so it never pollutes the two-way-odds board.
+The sportsbook lane remains the sharp-consensus/CLV anchor. PrizePicks output
+lands in separate append-only tables so it never pollutes two-way odds history.
 
-Live scraping is opt-in (PRIZEPICKS_LIVE=1) and against PrizePicks' ToS — the
-default is the shipped offline stub. Payout multipliers change and run promos;
-treat POWER_PAYOUTS as configurable and verify against the current board.
+Live fetching is opt-in (PRIZEPICKS_LIVE=1) and uses an undocumented endpoint.
+Set PRIZEPICKS_STATE_CODE to the jurisdiction where the board will be used.
+Verify the current board and payout shown in the app before submitting a lineup.
 
 Run: python mlb/prizepicks.py [YYYY-MM-DD]
 """
@@ -43,14 +36,11 @@ from factors import park_k_factor, ump_k_factor
 from predict import simulate_pitcher, N_SIMS
 
 BASE_DIR = Path(__file__).resolve().parent
-# first existing path wins: your own fixture in cache/, else the shipped sample
 STUB_PATHS = (
     BASE_DIR / "cache" / "stub_prizepicks_lines.json",
     BASE_DIR / "fixtures" / "stub_prizepicks_lines.sample.json",
 )
 
-# PrizePicks stat_type -> our market key. PrizePicks labels vary over time;
-# keep this map lenient (lower-cased, trimmed on lookup).
 STAT_MAP = {
     "pitcher strikeouts": "pitcher_strikeouts",
     "strikeouts": "pitcher_strikeouts",
@@ -61,66 +51,90 @@ STAT_MAP = {
     "outs recorded": "pitcher_outs",
 }
 
-# PrizePicks "Power Play" (all legs must hit) payout multipliers by leg count.
-# CONFIGURABLE — PrizePicks changes these and runs promos; verify against the
-# current board. Flex plays (partial payouts on a miss) are not modelled in v1,
-# nor are "demon"/"goblin" lines with boosted/reduced multipliers.
-POWER_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 37.5}
-TARGET_LEGS = 2          # reference play size for the single-leg "playable" bar
-PLAYABLE_MARGIN = 0.0    # require p_pick >= breakeven + this margin to flag
+# Standard PrizePicks power-play multipliers. Only the 2-pick rate is used for
+# the automatic play gate; other entries are retained for reporting/tests.
+POWER_PAYOUTS = {2: 3.0, 3: 6.0, 4: 10.0, 5: 20.0, 6: 37.5}
+TARGET_LEGS = 2
+EVALUATED_ODDS_TYPE = "standard"
+PLAYABLE_MARGIN = float(os.getenv("PRIZEPICKS_PLAYABLE_MARGIN", "0.04"))
+LINE_MAX_AGE_MINUTES = int(os.getenv("PRIZEPICKS_LINE_MAX_AGE_MINUTES", "30"))
 
-
-# ── payout / break-even math ─────────────────────────────────────────────────
 
 def power_breakeven(n_legs, payouts=None):
-    """Per-leg win prob at which an all-hit N-leg power play breaks even.
-
-    An N-leg power paying M x returns M * p**N in units of stake, so
-    break-even is p = (1/M)**(1/N).
-    """
+    """Per-leg win probability at which an all-hit power play breaks even."""
     payouts = payouts or POWER_PAYOUTS
     return (1.0 / payouts[n_legs]) ** (1.0 / n_legs)
 
 
 def power_ev(p, n_legs, payouts=None):
-    """Net EV per unit stake of an N-leg power whose legs each hit with prob p
-    (assumes independence). Positive means +EV."""
+    """Net EV per unit stake, assuming independent equal-probability legs."""
     payouts = payouts or POWER_PAYOUTS
     return payouts[n_legs] * (p ** n_legs) - 1.0
 
 
-# ── fetchers (live scrape + offline stub) ────────────────────────────────────
+def _normalized_odds_type(value):
+    value = (value or "standard").strip().lower()
+    return value if value in {"standard", "goblin", "demon"} else "unknown"
+
 
 class PrizePicksFetcher:
-    """Scrapes PrizePicks' public projections endpoint (JSON:API format).
+    """Best-effort fetcher for PrizePicks' undocumented projection endpoint."""
 
-    Opt-in via PRIZEPICKS_LIVE — scraping is against PrizePicks' ToS and the
-    endpoint sits behind Cloudflare, so this is best-effort. league_id and the
-    URL are configurable because both drift over time.
-    """
-
-    def __init__(self, league_id=None, base=None):
-        # MLB league id on PrizePicks (drifts over time — override via env)
+    def __init__(self, league_id=None, base=None, state_code=None):
         self.league_id = league_id or os.getenv("PRIZEPICKS_MLB_LEAGUE_ID", "2")
         self.base = base or os.getenv(
             "PRIZEPICKS_URL", "https://api.prizepicks.com/projections")
+        self.state_code = (
+            state_code or os.getenv("PRIZEPICKS_STATE_CODE", "")
+        ).strip().upper()
 
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
+        if not self.state_code:
+            raise RuntimeError(
+                "PRIZEPICKS_STATE_CODE is required for a jurisdiction-correct board"
+            )
+
         as_of = datetime.now(timezone.utc).isoformat()
-        payload = netfetch.get_json(
-            self.base,
-            params={"league_id": self.league_id, "per_page": 1000,
-                    "single_stat": "true"})
-        return _parse_projections(payload, game_date, as_of)
+        rows = []
+        page = 1
+        while True:
+            payload = netfetch.get_json(
+                self.base,
+                params={
+                    "league_id": self.league_id,
+                    "per_page": 250,
+                    "page": page,
+                    "single_stat": "true",
+                    "game_mode": "pickem",
+                    "is_live": "false",
+                    "state_code": self.state_code,
+                },
+            )
+            rows.extend(_parse_projections(payload, game_date, as_of))
+            meta = payload.get("meta") or {}
+            try:
+                total_pages = max(1, int(meta.get("total_pages") or 1))
+            except (TypeError, ValueError):
+                total_pages = 1
+            if page >= total_pages:
+                break
+            page += 1
+
+        # Defensive deduplication in case the source repeats a projection across
+        # page boundaries during a board update.
+        unique = {}
+        for row in rows:
+            key = (
+                row.get("projection_id"), row["player_name"], row["market"],
+                row["line"], row["odds_type"],
+            )
+            unique[key] = row
+        return list(unique.values())
 
 
 class StubPrizePicksFetcher:
-    """Offline stand-in: serves fixture projections from a JSON file.
-
-    Fixture format: [{"player_name": ..., "market"|"stat_type": ...,
-    "line": ..., "player_id": ..., "projection_id": ...}, ...]
-    """
+    """Offline stand-in serving fixture projections from JSON."""
 
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
@@ -131,46 +145,55 @@ class StubPrizePicksFetcher:
         with open(path) as f:
             fixtures = json.load(f)
         rows = []
-        for fx in fixtures:
-            market = fx.get("market") or STAT_MAP.get(
-                (fx.get("stat_type") or "").strip().lower())
+        for fixture in fixtures:
+            market = fixture.get("market") or STAT_MAP.get(
+                (fixture.get("stat_type") or "").strip().lower())
             if not market:
                 continue
             rows.append({
                 "game_date": game_date,
-                "player_name": fx["player_name"],
-                "player_id": fx.get("player_id"),
+                "player_name": fixture["player_name"],
+                "player_id": fixture.get("player_id"),
                 "market": market,
-                "line": float(fx["line"]),
-                "stat_type": fx.get("stat_type", market),
-                "projection_id": fx.get("projection_id"),
+                "line": float(fixture["line"]),
+                "odds_type": _normalized_odds_type(fixture.get("odds_type")),
+                "stat_type": fixture.get("stat_type", market),
+                "projection_id": fixture.get("projection_id"),
                 "as_of": as_of,
             })
         return rows
 
 
 def _parse_projections(payload, game_date, as_of):
-    """Turn a PrizePicks JSON:API payload into prizepicks_lines row dicts."""
-    # player id -> name from the `included` sidecar
+    """Turn a PrizePicks JSON:API payload into stored line rows."""
     names = {}
-    for inc in payload.get("included", []):
-        if inc.get("type") in ("new_player", "player"):
-            names[inc.get("id")] = (inc.get("attributes") or {}).get("name")
+    for included in payload.get("included", []):
+        if included.get("type") in ("new_player", "player"):
+            attributes = included.get("attributes") or {}
+            names[included.get("id")] = (
+                attributes.get("name") or attributes.get("display_name")
+            )
 
     rows = []
-    for proj in payload.get("data", []):
-        attr = proj.get("attributes", {}) or {}
-        market = STAT_MAP.get((attr.get("stat_type") or "").strip().lower())
+    for projection in payload.get("data", []):
+        attributes = projection.get("attributes", {}) or {}
+        market = STAT_MAP.get(
+            (attributes.get("stat_type") or "").strip().lower()
+        )
         if not market:
             continue
-        # projections can span several days — keep only this game date
-        start = attr.get("start_time") or ""
+        status = (attributes.get("status") or "pre_game").strip().lower()
+        if status not in {"pre_game", "scheduled"}:
+            continue
+        start = attributes.get("start_time") or ""
         if start and not start.startswith(game_date):
             continue
-        rel = (proj.get("relationships", {}) or {}).get("new_player", {})
-        pid = (rel.get("data") or {}).get("id")
-        name = names.get(pid)
-        line = attr.get("line_score")
+        relationship = (
+            (projection.get("relationships", {}) or {}).get("new_player", {})
+        )
+        player_ref = (relationship.get("data") or {}).get("id")
+        name = names.get(player_ref)
+        line = attributes.get("line_score")
         if not name or line is None:
             continue
         rows.append({
@@ -179,21 +202,27 @@ def _parse_projections(payload, game_date, as_of):
             "player_id": None,
             "market": market,
             "line": float(line),
-            "stat_type": attr.get("stat_type"),
-            "projection_id": proj.get("id"),
+            "odds_type": _normalized_odds_type(attributes.get("odds_type")),
+            "stat_type": attributes.get("stat_type"),
+            "projection_id": projection.get("id"),
             "as_of": as_of,
         })
     return rows
 
 
 def get_fetcher():
-    """Live scraper only when explicitly opted in; stub otherwise."""
-    if os.getenv("PRIZEPICKS_LIVE"):
+    """Use the live fetcher only for an explicit truthy opt-in value."""
+    live = os.getenv("PRIZEPICKS_LIVE", "").strip().lower()
+    if live in {"1", "true", "yes", "on"}:
         return PrizePicksFetcher()
     return StubPrizePicksFetcher()
 
 
-# ── schema + storage (all append-only, separate from the two-way tables) ─────
+def _ensure_column(conn, table, column, declaration):
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
 
 def ensure_schema(conn):
     conn.executescript("""
@@ -202,11 +231,12 @@ def ensure_schema(conn):
       game_date     TEXT NOT NULL,
       player_name   TEXT NOT NULL,
       player_id     INTEGER,
-      market        TEXT NOT NULL,          -- pitcher_strikeouts | pitcher_outs
+      market        TEXT NOT NULL,
       line          REAL NOT NULL,
-      stat_type     TEXT,                   -- raw PrizePicks label
-      projection_id TEXT,                   -- PrizePicks projection id
-      as_of         TEXT NOT NULL           -- snapshot time, append-only
+      odds_type     TEXT NOT NULL DEFAULT 'standard',
+      stat_type     TEXT,
+      projection_id TEXT,
+      as_of         TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_pp_lines_lookup
       ON prizepicks_lines(game_date, market, player_name);
@@ -220,16 +250,17 @@ def ensure_schema(conn):
       player_name   TEXT NOT NULL,
       player_id     INTEGER,
       market        TEXT NOT NULL,
-      line          REAL NOT NULL,          -- PrizePicks projection
-      p_over        REAL NOT NULL,          -- sim P(over the PP line)
-      pick_side     TEXT NOT NULL,          -- 'more' | 'less'
-      p_pick        REAL NOT NULL,          -- sim prob of the chosen side
-      breakeven     REAL NOT NULL,          -- per-leg break-even (TARGET_LEGS)
-      edge          REAL NOT NULL,          -- p_pick - breakeven
-      ev_2          REAL,                   -- per-leg EV if built as a 2-pick
-      ev_3          REAL,                   -- per-leg EV if built as a 3-pick
-      playable      INTEGER NOT NULL,       -- 1 when edge >= PLAYABLE_MARGIN
-      mean          REAL                    -- sim distribution mean
+      line          REAL NOT NULL,
+      odds_type     TEXT NOT NULL DEFAULT 'standard',
+      p_over        REAL NOT NULL,
+      pick_side     TEXT NOT NULL,
+      p_pick        REAL NOT NULL,
+      breakeven     REAL NOT NULL,
+      edge          REAL NOT NULL,
+      ev_2          REAL,
+      ev_3          REAL,
+      playable      INTEGER NOT NULL,
+      mean          REAL
     );
     CREATE INDEX IF NOT EXISTS idx_pp_picks_lookup
       ON prizepicks_picks(game_date, market, player_name);
@@ -238,13 +269,17 @@ def ensure_schema(conn):
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       pick_id       INTEGER NOT NULL REFERENCES prizepicks_picks(id),
       graded_at     TEXT NOT NULL,
-      actual        REAL,                   -- actual Ks or outs; NULL = void
-      outcome       TEXT,                   -- 'more' | 'less' | 'push' | 'void'
-      pick_won      INTEGER                 -- 1/0/NULL (NULL on push/void)
+      actual        REAL,
+      outcome       TEXT,
+      pick_won      INTEGER
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_results_pick
       ON prizepicks_results(pick_id);
     """)
+    _ensure_column(conn, "prizepicks_lines", "odds_type",
+                   "TEXT NOT NULL DEFAULT 'standard'")
+    _ensure_column(conn, "prizepicks_picks", "odds_type",
+                   "TEXT NOT NULL DEFAULT 'standard'")
     conn.commit()
 
 
@@ -254,40 +289,70 @@ def _insert_lines(conn, rows):
         return 0
     conn.executemany(
         """INSERT INTO prizepicks_lines
-           (game_date, player_name, player_id, market, line, stat_type,
-            projection_id, as_of)
+           (game_date, player_name, player_id, market, line, odds_type,
+            stat_type, projection_id, as_of)
            VALUES (:game_date, :player_name, :player_id, :market, :line,
-                   :stat_type, :projection_id, :as_of)""",
+                   :odds_type, :stat_type, :projection_id, :as_of)""",
         rows,
     )
     conn.commit()
     return len(rows)
 
 
-def _latest_lines(conn, game_date):
-    """Most recent snapshot per (player, market, line) for a date."""
+def _latest_lines(conn, game_date, odds_type=EVALUATED_ODDS_TYPE):
+    """Return one odds tier from the newest complete PrizePicks snapshot.
+
+    Automatic selection is intentionally limited to ``standard`` projections.
+    Goblin and demon rows remain stored for audit, but their lineup-specific
+    payout adjustments make the standard 3x break-even invalid.
+    """
     return conn.execute(
-        """SELECT * FROM prizepicks_lines pl
-           WHERE pl.game_date = ?
-             AND pl.as_of = (
-               SELECT MAX(as_of) FROM prizepicks_lines
-               WHERE game_date = pl.game_date AND player_name = pl.player_name
-                 AND market = pl.market AND line = pl.line)""",
-        (game_date,)).fetchall()
+        """SELECT * FROM prizepicks_lines
+           WHERE game_date = ?
+             AND as_of = (
+               SELECT MAX(as_of) FROM prizepicks_lines WHERE game_date = ?)
+             AND odds_type = ?""",
+        (game_date, game_date, odds_type)).fetchall()
+
+
+def _latest_snapshot_time(conn, game_date):
+    row = conn.execute(
+        "SELECT MAX(as_of) AS as_of FROM prizepicks_lines WHERE game_date=?",
+        (game_date,),
+    ).fetchone()
+    return row["as_of"] if row else None
+
+
+def _snapshot_is_fresh(conn, game_date):
+    """Require a recent live-board snapshot for today's real-money run."""
+    if game_date != date.today().isoformat():
+        return True
+    stamp = _latest_snapshot_time(conn, game_date)
+    if not stamp:
+        return False
+    try:
+        observed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    age_minutes = (datetime.now(timezone.utc) - observed).total_seconds() / 60.0
+    return 0 <= age_minutes <= LINE_MAX_AGE_MINUTES
 
 
 def _norm(name):
     return "".join(ch for ch in (name or "").lower() if ch.isalpha())
 
 
-# ── stages ───────────────────────────────────────────────────────────────────
-
 def refresh(game_date=None):
     """Fetch today's PrizePicks projections and append them to line history."""
     conn = db.connect()
     ensure_schema(conn)
     fetcher = get_fetcher()
-    rows = fetcher.fetch(game_date)
+    try:
+        rows = fetcher.fetch(game_date)
+    except Exception as exc:
+        print(f"[prizepicks] refresh failed: {exc}")
+        conn.close()
+        return 0
     n = _insert_lines(conn, rows)
     print(f"[prizepicks] {type(fetcher).__name__}: stored {n} projection snapshots")
     conn.close()
@@ -295,70 +360,86 @@ def refresh(game_date=None):
 
 
 def evaluate_date(game_date=None, n_sims=N_SIMS):
-    """Score every posted PrizePicks line off the simulator distribution."""
+    """Score every currently posted standard PrizePicks line."""
     game_date = game_date or date.today().isoformat()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conn = db.connect()
     ensure_schema(conn)
 
+    if not _snapshot_is_fresh(conn, game_date):
+        print(
+            f"[prizepicks] refusing to evaluate {game_date}: "
+            f"no projection snapshot within {LINE_MAX_AGE_MINUTES} minutes"
+        )
+        conn.close()
+        return 0
+
     lines_by_player = {}
     for row in _latest_lines(conn, game_date):
         lines_by_player.setdefault(_norm(row["player_name"]), []).append(row)
     if not lines_by_player:
-        print("[prizepicks] no projections stored — run refresh first")
+        print("[prizepicks] no current standard projections — run refresh first")
         conn.close()
         return 0
 
     n_logged = 0
-    for g in data_today.get_schedule(game_date):
-        k_park = park_k_factor(g["home_team"])
-        ump_name = data_today.get_home_plate_umpire(g["game_pk"])
+    for game in data_today.get_schedule(game_date):
+        k_park = park_k_factor(game["home_team"])
+        ump_name = data_today.get_home_plate_umpire(game["game_pk"])
         k_ump = ump_k_factor(ump_name)
         for side in ("home", "away"):
-            pitcher = g[f"{side}_pitcher"]
+            pitcher = game[f"{side}_pitcher"]
             if not pitcher:
                 continue
             line_rows = lines_by_player.get(_norm(pitcher["name"]))
             if not line_rows:
                 continue
-            opp_lineup_ids = g["away_lineup"] if side == "home" else g["home_lineup"]
+            opp_lineup_ids = (
+                game["away_lineup"] if side == "home" else game["home_lineup"]
+            )
             try:
-                ks, outs, _ = simulate_pitcher(
+                ks, outs, meta = simulate_pitcher(
                     pitcher, opp_lineup_ids, k_park=k_park, k_ump=k_ump,
                     n_sims=n_sims)
-            except Exception as e:
-                print(f"[prizepicks] {pitcher['name']}: sim failed ({e})")
+            except Exception as exc:
+                print(f"[prizepicks] {pitcher['name']}: sim failed ({exc})")
                 continue
             arrays = {"pitcher_strikeouts": ks, "pitcher_outs": outs}
-            for r in line_rows:
-                arr = arrays.get(r["market"])
+            for row in line_rows:
+                arr = arrays.get(row["market"])
                 if arr is None:
                     continue
-                n_logged += _log_pick(conn, run_id, game_date, g, pitcher, r, arr)
-    print(f"[prizepicks] logged {n_logged} picks")
+                n_logged += _log_pick(
+                    conn, run_id, game_date, game, pitcher, row, arr,
+                    allow_play=bool(meta.get("confirmed")),
+                )
+    print(f"[prizepicks] logged {n_logged} standard picks")
     conn.close()
     return n_logged
 
 
-def _log_pick(conn, run_id, game_date, game, pitcher, line_row, arr):
+def _log_pick(
+    conn, run_id, game_date, game, pitcher, line_row, arr, allow_play=True
+):
     line = line_row["line"]
     p_over, p_under, _ = simulator.prob_over(arr, line)
     if p_over >= 0.5:
         pick_side, p_pick = "more", p_over
     else:
         pick_side, p_pick = "less", p_under
-    be = power_breakeven(TARGET_LEGS)
-    edge = p_pick - be
+    breakeven = power_breakeven(TARGET_LEGS)
+    edge = p_pick - breakeven
+    playable = bool(allow_play and edge >= PLAYABLE_MARGIN)
     conn.execute(
         """INSERT INTO prizepicks_picks
            (run_id, created_at, game_date, game_pk, player_name, player_id,
-            market, line, p_over, pick_side, p_pick, breakeven, edge,
+            market, line, odds_type, p_over, pick_side, p_pick, breakeven, edge,
             ev_2, ev_3, playable, mean)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, db.utcnow(), game_date, game["game_pk"], pitcher["name"],
-         pitcher.get("id"), line_row["market"], line, p_over, pick_side,
-         p_pick, be, edge, power_ev(p_pick, 2), power_ev(p_pick, 3),
-         1 if edge >= PLAYABLE_MARGIN else 0, float(arr.mean())))
+         pitcher.get("id"), line_row["market"], line, line_row["odds_type"],
+         p_over, pick_side, p_pick, breakeven, edge, power_ev(p_pick, 2),
+         power_ev(p_pick, 3), 1 if playable else 0, float(arr.mean())))
     conn.commit()
     return 1
 
@@ -379,54 +460,57 @@ def grade_date(game_date=None):
         return 0
 
     actuals_by_game = {}
-    n = 0
-    for pk in picks:
-        gp = pk["game_pk"]
-        if gp not in actuals_by_game:
+    graded = 0
+    for pick in picks:
+        game_pk = pick["game_pk"]
+        if game_pk not in actuals_by_game:
             try:
-                actuals_by_game[gp] = data_today.get_starter_actuals(gp) or {}
-            except Exception as e:
-                print(f"[prizepicks] actuals for game {gp} failed ({e})")
-                actuals_by_game[gp] = {}
-        stat = "ks" if pk["market"] == "pitcher_strikeouts" else "outs"
-        box = actuals_by_game[gp].get(pk["player_id"])
+                actuals_by_game[game_pk] = (
+                    data_today.get_starter_actuals(game_pk) or {}
+                )
+            except Exception as exc:
+                print(f"[prizepicks] actuals for game {game_pk} failed ({exc})")
+                actuals_by_game[game_pk] = {}
+        stat = "ks" if pick["market"] == "pitcher_strikeouts" else "outs"
+        box = actuals_by_game[game_pk].get(pick["player_id"])
         actual = box.get(stat) if box else None
 
         if actual is None:
             outcome, won = "void", None
-        elif actual > pk["line"]:
-            outcome, won = "more", 1 if pk["pick_side"] == "more" else 0
-        elif actual < pk["line"]:
-            outcome, won = "less", 1 if pk["pick_side"] == "less" else 0
+        elif actual > pick["line"]:
+            outcome, won = "more", 1 if pick["pick_side"] == "more" else 0
+        elif actual < pick["line"]:
+            outcome, won = "less", 1 if pick["pick_side"] == "less" else 0
         else:
             outcome, won = "push", None
         conn.execute(
             """INSERT INTO prizepicks_results
                (pick_id, graded_at, actual, outcome, pick_won)
                VALUES (?,?,?,?,?)""",
-            (pk["id"], db.utcnow(), actual, outcome, won))
+            (pick["id"], db.utcnow(), actual, outcome, won))
         conn.commit()
-        n += 1
-    print(f"[prizepicks] graded {n} picks")
+        graded += 1
+    print(f"[prizepicks] graded {graded} picks")
     conn.close()
-    return n
+    return graded
 
 
 def run_all(game_date=None):
-    """refresh -> evaluate for the given date."""
-    refresh(game_date)
+    """Refresh and evaluate only when a current snapshot was stored."""
+    n = refresh(game_date)
+    if n <= 0:
+        print("[prizepicks] refresh returned no projections; evaluation aborted")
+        return 0
     return evaluate_date(game_date)
 
-
-# ── board renderer (stdout) ──────────────────────────────────────────────────
 
 def print_board(game_date=None):
     game_date = game_date or date.today().isoformat()
     conn = db.connect()
     ensure_schema(conn)
     run = conn.execute(
-        "SELECT MAX(run_id) r FROM prizepicks_picks WHERE game_date=?",
-        (game_date,)).fetchone()["r"]
+        "SELECT MAX(run_id) AS run_id FROM prizepicks_picks WHERE game_date=?",
+        (game_date,)).fetchone()["run_id"]
     if not run:
         print(f"[prizepicks] no picks for {game_date}")
         conn.close()
@@ -434,23 +518,27 @@ def print_board(game_date=None):
     rows = conn.execute(
         """SELECT * FROM prizepicks_picks WHERE game_date=? AND run_id=?
            ORDER BY edge DESC""", (game_date, run)).fetchall()
-    mkt = {"pitcher_strikeouts": "Strikeouts", "pitcher_outs": "Pitcher Outs"}
-    be = power_breakeven(TARGET_LEGS)
-    print(f"\n===== PrizePicks Board — {game_date}  "
-          f"(break-even {be:.1%} for a {TARGET_LEGS}-pick power) =====")
-    hdr = (f"{'Pitcher':<15}{'Stat':<13}{'PP Line':>8}  {'Pick':<6}"
-           f"{'P(pick)':>8}{'Edge':>8}  {'Play?':<6}")
-    print(hdr + "\n" + "-" * len(hdr))
-    for r in rows:
-        flag = "PLAY" if r["playable"] else "—"
-        print(f"{r['player_name']:<15}{mkt.get(r['market'], r['market']):<13}"
-              f"{r['line']:>8}  {r['pick_side'].upper():<6}"
-              f"{r['p_pick']:>8.1%}{r['edge']:>+8.1%}  {flag:<6}")
+    market_names = {
+        "pitcher_strikeouts": "Strikeouts",
+        "pitcher_outs": "Pitcher Outs",
+    }
+    breakeven = power_breakeven(TARGET_LEGS)
+    print(f"\n===== PrizePicks STANDARD Board — {game_date}  "
+          f"(break-even {breakeven:.1%} for a {TARGET_LEGS}-pick power) =====")
+    header = (f"{'Pitcher':<15}{'Stat':<13}{'PP Line':>8}  {'Pick':<6}"
+              f"{'P(pick)':>8}{'Edge':>8}  {'Play?':<6}")
+    print(header + "\n" + "-" * len(header))
+    for row in rows:
+        flag = "PLAY" if row["playable"] else "—"
+        print(f"{row['player_name']:<15}"
+              f"{market_names.get(row['market'], row['market']):<13}"
+              f"{row['line']:>8}  {row['pick_side'].upper():<6}"
+              f"{row['p_pick']:>8.1%}{row['edge']:>+8.1%}  {flag:<6}")
     conn.close()
 
 
 if __name__ == "__main__":
     import sys
-    d = sys.argv[1] if len(sys.argv) > 1 else None
-    run_all(d)
-    print_board(d)
+    selected_date = sys.argv[1] if len(sys.argv) > 1 else None
+    run_all(selected_date)
+    print_board(selected_date)
