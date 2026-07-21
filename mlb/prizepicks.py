@@ -12,6 +12,7 @@ The sportsbook lane remains the sharp-consensus/CLV anchor. PrizePicks output
 lands in separate append-only tables so it never pollutes two-way odds history.
 
 Live fetching is opt-in (PRIZEPICKS_LIVE=1) and uses an undocumented endpoint.
+Set PRIZEPICKS_STATE_CODE to the jurisdiction where the board will be used.
 Verify the current board and payout shown in the app before submitting a lineup.
 
 Run: python mlb/prizepicks.py [YYYY-MM-DD]
@@ -77,21 +78,59 @@ def _normalized_odds_type(value):
 
 
 class PrizePicksFetcher:
-    """Best-effort fetcher for PrizePicks' public projections endpoint."""
+    """Best-effort fetcher for PrizePicks' undocumented projection endpoint."""
 
-    def __init__(self, league_id=None, base=None):
+    def __init__(self, league_id=None, base=None, state_code=None):
         self.league_id = league_id or os.getenv("PRIZEPICKS_MLB_LEAGUE_ID", "2")
         self.base = base or os.getenv(
             "PRIZEPICKS_URL", "https://api.prizepicks.com/projections")
+        self.state_code = (
+            state_code or os.getenv("PRIZEPICKS_STATE_CODE", "")
+        ).strip().upper()
 
     def fetch(self, game_date=None):
         game_date = game_date or date.today().isoformat()
+        if not self.state_code:
+            raise RuntimeError(
+                "PRIZEPICKS_STATE_CODE is required for a jurisdiction-correct board"
+            )
+
         as_of = datetime.now(timezone.utc).isoformat()
-        payload = netfetch.get_json(
-            self.base,
-            params={"league_id": self.league_id, "per_page": 250,
-                    "single_stat": "true", "game_mode": "pickem"})
-        return _parse_projections(payload, game_date, as_of)
+        rows = []
+        page = 1
+        while True:
+            payload = netfetch.get_json(
+                self.base,
+                params={
+                    "league_id": self.league_id,
+                    "per_page": 250,
+                    "page": page,
+                    "single_stat": "true",
+                    "game_mode": "pickem",
+                    "is_live": "false",
+                    "state_code": self.state_code,
+                },
+            )
+            rows.extend(_parse_projections(payload, game_date, as_of))
+            meta = payload.get("meta") or {}
+            try:
+                total_pages = max(1, int(meta.get("total_pages") or 1))
+            except (TypeError, ValueError):
+                total_pages = 1
+            if page >= total_pages:
+                break
+            page += 1
+
+        # Defensive deduplication in case the source repeats a projection across
+        # page boundaries during a board update.
+        unique = {}
+        for row in rows:
+            key = (
+                row.get("projection_id"), row["player_name"], row["market"],
+                row["line"], row["odds_type"],
+            )
+            unique[key] = row
+        return list(unique.values())
 
 
 class StubPrizePicksFetcher:
@@ -106,20 +145,20 @@ class StubPrizePicksFetcher:
         with open(path) as f:
             fixtures = json.load(f)
         rows = []
-        for fx in fixtures:
-            market = fx.get("market") or STAT_MAP.get(
-                (fx.get("stat_type") or "").strip().lower())
+        for fixture in fixtures:
+            market = fixture.get("market") or STAT_MAP.get(
+                (fixture.get("stat_type") or "").strip().lower())
             if not market:
                 continue
             rows.append({
                 "game_date": game_date,
-                "player_name": fx["player_name"],
-                "player_id": fx.get("player_id"),
+                "player_name": fixture["player_name"],
+                "player_id": fixture.get("player_id"),
                 "market": market,
-                "line": float(fx["line"]),
-                "odds_type": _normalized_odds_type(fx.get("odds_type")),
-                "stat_type": fx.get("stat_type", market),
-                "projection_id": fx.get("projection_id"),
+                "line": float(fixture["line"]),
+                "odds_type": _normalized_odds_type(fixture.get("odds_type")),
+                "stat_type": fixture.get("stat_type", market),
+                "projection_id": fixture.get("projection_id"),
                 "as_of": as_of,
             })
         return rows
@@ -128,23 +167,33 @@ class StubPrizePicksFetcher:
 def _parse_projections(payload, game_date, as_of):
     """Turn a PrizePicks JSON:API payload into stored line rows."""
     names = {}
-    for inc in payload.get("included", []):
-        if inc.get("type") in ("new_player", "player"):
-            names[inc.get("id")] = (inc.get("attributes") or {}).get("name")
+    for included in payload.get("included", []):
+        if included.get("type") in ("new_player", "player"):
+            attributes = included.get("attributes") or {}
+            names[included.get("id")] = (
+                attributes.get("name") or attributes.get("display_name")
+            )
 
     rows = []
-    for proj in payload.get("data", []):
-        attr = proj.get("attributes", {}) or {}
-        market = STAT_MAP.get((attr.get("stat_type") or "").strip().lower())
+    for projection in payload.get("data", []):
+        attributes = projection.get("attributes", {}) or {}
+        market = STAT_MAP.get(
+            (attributes.get("stat_type") or "").strip().lower()
+        )
         if not market:
             continue
-        start = attr.get("start_time") or ""
+        status = (attributes.get("status") or "pre_game").strip().lower()
+        if status not in {"pre_game", "scheduled"}:
+            continue
+        start = attributes.get("start_time") or ""
         if start and not start.startswith(game_date):
             continue
-        rel = (proj.get("relationships", {}) or {}).get("new_player", {})
-        pid = (rel.get("data") or {}).get("id")
-        name = names.get(pid)
-        line = attr.get("line_score")
+        relationship = (
+            (projection.get("relationships", {}) or {}).get("new_player", {})
+        )
+        player_ref = (relationship.get("data") or {}).get("id")
+        name = names.get(player_ref)
+        line = attributes.get("line_score")
         if not name or line is None:
             continue
         rows.append({
@@ -153,9 +202,9 @@ def _parse_projections(payload, game_date, as_of):
             "player_id": None,
             "market": market,
             "line": float(line),
-            "odds_type": _normalized_odds_type(attr.get("odds_type")),
-            "stat_type": attr.get("stat_type"),
-            "projection_id": proj.get("id"),
+            "odds_type": _normalized_odds_type(attributes.get("odds_type")),
+            "stat_type": attributes.get("stat_type"),
+            "projection_id": projection.get("id"),
             "as_of": as_of,
         })
     return rows
@@ -227,7 +276,6 @@ def ensure_schema(conn):
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_results_pick
       ON prizepicks_results(pick_id);
     """)
-    # Existing databases created before the audit need an in-place migration.
     _ensure_column(conn, "prizepicks_lines", "odds_type",
                    "TEXT NOT NULL DEFAULT 'standard'")
     _ensure_column(conn, "prizepicks_picks", "odds_type",
@@ -299,7 +347,12 @@ def refresh(game_date=None):
     conn = db.connect()
     ensure_schema(conn)
     fetcher = get_fetcher()
-    rows = fetcher.fetch(game_date)
+    try:
+        rows = fetcher.fetch(game_date)
+    except Exception as exc:
+        print(f"[prizepicks] refresh failed: {exc}")
+        conn.close()
+        return 0
     n = _insert_lines(conn, rows)
     print(f"[prizepicks] {type(fetcher).__name__}: stored {n} projection snapshots")
     conn.close()
