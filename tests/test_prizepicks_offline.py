@@ -2,8 +2,9 @@
 
 No network, no pytest:  python tests/test_prizepicks_offline.py
 
-Covers payout math, schema, complete-board snapshot replacement, conservative
-playability gates, evaluation, and next-day grading. StatsAPI is monkeypatched.
+Covers payout math, schema, complete-board snapshot replacement, odds-tier
+separation, conservative playability gates, evaluation, and next-day grading.
+StatsAPI is monkeypatched.
 """
 import os
 import sys
@@ -33,7 +34,7 @@ print("prizepicks math:")
 be2 = pp.power_breakeven(2)
 be3 = pp.power_breakeven(3)
 check("2-pick break-even ~57.7%", abs(be2 - 0.5774) < 1e-3, f"({be2:.4f})")
-check("3-pick break-even ~58.5%", abs(be3 - (0.2 ** (1 / 3))) < 1e-9,
+check("3-pick break-even ~55.0%", abs(be3 - ((1 / 6) ** (1 / 3))) < 1e-9,
       f"({be3:.4f})")
 check("EV zero exactly at break-even", abs(pp.power_ev(be2, 2)) < 1e-9)
 check("EV positive above break-even", pp.power_ev(0.62, 2) > 0)
@@ -53,6 +54,7 @@ pp._insert_lines(snapshot_conn, [
         "player_id": None,
         "market": "pitcher_strikeouts",
         "line": 5.5,
+        "odds_type": "standard",
         "stat_type": "Pitcher Strikeouts",
         "projection_id": "move-1",
         "as_of": "2026-07-01T10:00:00+00:00",
@@ -63,27 +65,47 @@ pp._insert_lines(snapshot_conn, [
         "player_id": None,
         "market": "pitcher_strikeouts",
         "line": 6.5,
+        "odds_type": "standard",
         "stat_type": "Pitcher Strikeouts",
         "projection_id": "removed-1",
         "as_of": "2026-07-01T10:00:00+00:00",
     },
 ])
-pp._insert_lines(snapshot_conn, [{
-    "game_date": DATE,
-    "player_name": "Moved Line",
-    "player_id": None,
-    "market": "pitcher_strikeouts",
-    "line": 4.5,
-    "stat_type": "Pitcher Strikeouts",
-    "projection_id": "move-1",
-    "as_of": "2026-07-01T10:05:00+00:00",
-}])
-active_snapshot = pp._latest_lines(snapshot_conn, DATE)
+pp._insert_lines(snapshot_conn, [
+    {
+        "game_date": DATE,
+        "player_name": "Moved Line",
+        "player_id": None,
+        "market": "pitcher_strikeouts",
+        "line": 4.5,
+        "odds_type": "standard",
+        "stat_type": "Pitcher Strikeouts",
+        "projection_id": "move-1",
+        "as_of": "2026-07-01T10:05:00+00:00",
+    },
+    {
+        "game_date": DATE,
+        "player_name": "Moved Line",
+        "player_id": None,
+        "market": "pitcher_strikeouts",
+        "line": 7.5,
+        "odds_type": "demon",
+        "stat_type": "Pitcher Strikeouts",
+        "projection_id": "move-demon",
+        "as_of": "2026-07-01T10:05:00+00:00",
+    },
+])
+active_standard = pp._latest_lines(snapshot_conn, DATE)
+active_demon = pp._latest_lines(snapshot_conn, DATE, odds_type="demon")
 check("old moved threshold removed",
-      len(active_snapshot) == 1 and active_snapshot[0]["line"] == 4.5,
-      f"({[(row['player_name'], row['line']) for row in active_snapshot]})")
+      len(active_standard) == 1 and active_standard[0]["line"] == 4.5,
+      f"({[(row['player_name'], row['line']) for row in active_standard]})")
 check("removed player disappears from active board",
-      all(row["player_name"] != "Removed Player" for row in active_snapshot))
+      all(row["player_name"] != "Removed Player" for row in active_standard))
+check("demon line excluded from standard board",
+      all(row["odds_type"] == "standard" for row in active_standard))
+check("demon line retained separately",
+      len(active_demon) == 1 and active_demon[0]["line"] == 7.5)
 snapshot_conn.close()
 
 print("prizepicks pipeline (temp db, mocked network):")
@@ -128,6 +150,8 @@ lines = conn.execute(
 ).fetchall()
 check("stat_type mapped to markets",
       {line["market"] for line in lines} == {"pitcher_strikeouts", "pitcher_outs"})
+check("stub defaults to standard odds tier",
+      all(line["odds_type"] == "standard" for line in lines))
 ace_outs_line = [
     line for line in lines
     if line["player_name"] == "Ace Example" and line["market"] == "pitcher_outs"
@@ -140,6 +164,8 @@ check("picks logged for both starters", n_picks == 4, f"(n={n_picks})")
 picks = conn.execute(
     "SELECT * FROM prizepicks_picks WHERE game_date=?", (DATE,)
 ).fetchall()
+check("only standard lines evaluated",
+      all(pick["odds_type"] == "standard" for pick in picks))
 ace_k = [
     pick for pick in picks
     if pick["player_name"] == "Ace Example"
@@ -209,18 +235,27 @@ PP_PAYLOAD = {
     "data": [
         {"id": "proj-1", "type": "projection", "attributes": {
             "stat_type": "Pitcher Strikeouts", "line_score": 6.5,
+            "odds_type": "standard",
             "start_time": "2026-07-01T19:05:00-04:00"},
          "relationships": {"new_player": {"data": {"id": "np-1"}}}},
         {"id": "proj-2", "type": "projection", "attributes": {
             "stat_type": "Pitching Outs", "line_score": 16.5,
+            "odds_type": "standard",
             "start_time": "2026-07-01T19:05:00-04:00"},
          "relationships": {"new_player": {"data": {"id": "np-1"}}}},
         {"id": "proj-3", "type": "projection", "attributes": {
             "stat_type": "Pitcher Strikeouts", "line_score": 5.5,
+            "odds_type": "standard",
             "start_time": "2026-07-02T13:10:00-04:00"},
          "relationships": {"new_player": {"data": {"id": "np-2"}}}},
         {"id": "proj-4", "type": "projection", "attributes": {
             "stat_type": "Hits Allowed", "line_score": 4.5,
+            "odds_type": "standard",
+            "start_time": "2026-07-01T19:05:00-04:00"},
+         "relationships": {"new_player": {"data": {"id": "np-1"}}}},
+        {"id": "proj-5", "type": "projection", "attributes": {
+            "stat_type": "Pitcher Strikeouts", "line_score": 7.5,
+            "odds_type": "demon",
             "start_time": "2026-07-01T19:05:00-04:00"},
          "relationships": {"new_player": {"data": {"id": "np-1"}}}},
     ],
@@ -233,12 +268,17 @@ PP_PAYLOAD = {
 }
 
 parsed = pp._parse_projections(PP_PAYLOAD, DATE, "2026-07-01T12:00:00Z")
-check("parsed today's mapped projections (2)", len(parsed) == 2, f"({len(parsed)})")
-parsed_by_market = {row["market"]: row for row in parsed}
-check("strikeouts projection parsed",
+standard_parsed = [row for row in parsed if row["odds_type"] == "standard"]
+demon_parsed = [row for row in parsed if row["odds_type"] == "demon"]
+check("parsed today's mapped projections (3)", len(parsed) == 3, f"({len(parsed)})")
+check("standard and demon tiers preserved",
+      len(standard_parsed) == 2 and len(demon_parsed) == 1)
+parsed_by_market = {row["market"]: row for row in standard_parsed}
+check("standard strikeouts projection parsed",
       "pitcher_strikeouts" in parsed_by_market
       and parsed_by_market["pitcher_strikeouts"]["player_name"] == "Ace Example"
       and parsed_by_market["pitcher_strikeouts"]["line"] == 6.5)
+check("demon strikeouts line preserved separately", demon_parsed[0]["line"] == 7.5)
 check("player name resolved from included sidecar",
       all(row["player_name"] == "Ace Example" for row in parsed))
 check("projection_id carried through",
