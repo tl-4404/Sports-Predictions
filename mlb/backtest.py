@@ -37,10 +37,9 @@ import numpy as np
 
 import factors
 import simulator
+from decision import MAX_AUTO_GAP, MAX_KELLY, MIN_EDGE
 from betting_math import (american_to_decimal, consensus_p_over,
                           kelly_fraction)
-
-MIN_EDGE = 0.03
 
 # accept a few common spellings of the two markets in an odds archive
 MARKET_ALIASES = {
@@ -96,14 +95,21 @@ def _score_line(arr, actual_value, ln):
         rec["market_p_over"] = market_p
         edge_over = p_over - market_p
         edge_under = p_under - (1 - market_p)
-        if edge_over >= MIN_EDGE and edge_over >= edge_under:
+        if (
+            MIN_EDGE <= edge_over <= MAX_AUTO_GAP
+            and edge_over >= edge_under
+        ):
             rec.update(bet_side="over", edge=edge_over,
                        odds=ln.get("over_odds"),
-                       kelly=kelly_fraction(p_over, ln.get("over_odds")))
-        elif edge_under >= MIN_EDGE:
+                       kelly=kelly_fraction(
+                           p_over, ln.get("over_odds"), cap=MAX_KELLY
+                       ))
+        elif MIN_EDGE <= edge_under <= MAX_AUTO_GAP:
             rec.update(bet_side="under", edge=edge_under,
                        odds=ln.get("under_odds"),
-                       kelly=kelly_fraction(p_under, ln.get("under_odds")))
+                       kelly=kelly_fraction(
+                           p_under, ln.get("under_odds"), cap=MAX_KELLY
+                       ))
 
     if rec["bet_side"] and over_hit is not None and rec["odds"] is not None:
         won = (over_hit and rec["bet_side"] == "over") or \
@@ -116,9 +122,11 @@ def _score_line(arr, actual_value, ln):
     close_p = consensus_p_over(
         [(ln.get("closing_over_odds"), ln.get("closing_under_odds"))])
     if close_p is not None and rec["bet_side"]:
-        ours = p_over if rec["bet_side"] == "over" else p_under
+        entry_side = (
+            market_p if rec["bet_side"] == "over" else 1.0 - market_p
+        )
         close_side = close_p if rec["bet_side"] == "over" else 1 - close_p
-        rec["clv"] = ours - close_side
+        rec["clv"] = close_side - entry_side
     return rec
 
 
@@ -141,8 +149,8 @@ def load_odds_archive(path):
       game_date, player_name, market, line, over_odds, under_odds,
       [closing_over_odds, closing_under_odds]
     'market' may be pitcher_strikeouts/pitcher_outs or a common alias.
-    Closing prices are optional (needed only for CLV); when absent, the
-    opening price is reused so CLV is ~0 rather than missing.
+    Closing prices are optional (needed only for CLV); when absent, CLV stays
+    missing rather than being falsely recorded as zero.
     """
     if path.lower().endswith(".json"):
         with open(path) as f:
@@ -164,8 +172,8 @@ def load_odds_archive(path):
         archive.setdefault(key, []).append({
             "market": market, "line": float(line),
             "over_odds": over, "under_odds": under,
-            "closing_over_odds": _to_num(r.get("closing_over_odds")) if r.get("closing_over_odds") not in (None, "") else over,
-            "closing_under_odds": _to_num(r.get("closing_under_odds")) if r.get("closing_under_odds") not in (None, "") else under,
+            "closing_over_odds": _to_num(r.get("closing_over_odds")),
+            "closing_under_odds": _to_num(r.get("closing_under_odds")),
         })
     return archive
 
@@ -373,7 +381,12 @@ def main():
     ap.add_argument("--games", type=int, default=250)
     args = ap.parse_args()
 
-    if args.synthetic or not args.dataset:
+    if not args.synthetic and not args.dataset:
+        ap.error(
+            "a real historical dataset is required; use --synthetic only for "
+            "an engine self-consistency test (never as evidence of accuracy)"
+        )
+    if args.synthetic:
         print("Running synthetic self-consistency backtest "
               "(model == data-generating process)...")
         data = synthetic_dataset(n_games=args.games, flat_market=args.flat_market)
@@ -388,6 +401,11 @@ def main():
         print(f"Merged odds archive: {matched}/{len(data)} starts matched a line")
 
     records = run_backtest(data, n_sims=args.sims)
+    if not records:
+        raise SystemExit(
+            "No priced props were scored. Check dataset/odds archive keys; "
+            "an empty or outcome-derived board is not a valid backtest."
+        )
     print(report(records))
 
 

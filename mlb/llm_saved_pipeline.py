@@ -5,15 +5,14 @@ research, independent-handicapper, and bounded-judge instructions in ``llm`` so
 that the app's LLM lane mirrors the preserved SportsAid chat workflow.
 
 The LLM still cannot see the simulator or prices during its independent prediction.
-The final judge remains bounded and market-aware, preserving two genuinely parallel
-lanes while making the qualitative lane's process auditable and relevant to the
-persistent calibration database.
+The final judge remains bounded and market-aware, but the qualitative lane is
+analysis-only: it can veto a simulator candidate and cannot manufacture edge.
 """
 from __future__ import annotations
 
 import llm as base
 
-PIPELINE_VERSION = "chat-preserved-v3.0"
+PIPELINE_VERSION = "accuracy-v4.0"
 
 base.MAX_SEARCHES_PER_GAME = 10
 
@@ -144,25 +143,25 @@ base.PREDICT_PROMPT = base.PREDICT_PROMPT.replace(
 )
 
 base.JUDGE_SYSTEM = """
-You are the final bounded judge for two parallel MLB prop pipelines:
-- a plate-appearance Monte Carlo model, strong on numerical rates/distributions;
-- an independent chat-aligned LLM audit, strong on current usage, news, H2H context,
-  pitch mix and identifying why a line may be deceptive.
-You also see the de-vigged market, which is a strong prior and may contain information
-neither lane has.
+You are the adversarial safety judge for an accuracy-first MLB prop pipeline.
+The simulator owns the numeric candidate; the independent chat-aligned LLM is
+analysis-only; and the de-vigged market is the anchor. You may weaken or veto a
+simulator candidate, but you may never strengthen it, flip it, or create a wager
+the simulator left in HOLD.
 
 Mirror the preserved SportsAid chat standard for every decision:
 - verify the apparent edge survives workload-ramp and current-lineup scrutiny;
 - identify why the line is set where it is and whether juice already prices the edge;
 - state the strongest argument against the proposed bet;
 - downgrade stale, mismatched, unavailable or small-sample evidence;
-- treat large model/market disagreement as a manual-review or pass signal;
+- freeze large model/market disagreement for manual investigation;
 - prefer passing over manufacturing confidence;
 - never rescue a weak bet merely because recent game logs are hot;
 - never veto a strong model solely because tiny H2H is unfavorable.
 
-Your numeric authority remains narrow and will be clamped in code. The rationale MUST
-contain: WHY LINE EXISTS; SUPPORT; COUNTERARGUMENT; DATA QUALITY; ACTION.
+Your numeric authority remains narrow, erode-only, and will be clamped in code.
+The rationale MUST contain: WHY LINE EXISTS; SUPPORT; COUNTERARGUMENT;
+DATA QUALITY; ACTION.
 """
 
 base.JUDGE_PROMPT = """Pipeline policy version: {pipeline_version}
@@ -171,8 +170,8 @@ base.JUDGE_PROMPT = """Pipeline policy version: {pipeline_version}
 Research flags: {flags}
 Game notes: {game_notes}
 
-For each prop, the application provides simulator P(over), independent LLM P(over)
-with confidence, de-vigged market P(over), and a {w_sim:.0%}/{w_llm:.0%} blend:
+For each prop, the application provides simulator P(over), analysis-only LLM
+P(over), de-vigged market P(over), and the simulator's current action:
 {props_block}
 
 Apply the full chat-standard audit. For each prop:
@@ -181,8 +180,9 @@ Apply the full chat-standard audit. For each prop:
 3. Name the strongest counterargument.
 4. Flag stale data, usage-ramp mistakes, role uncertainty, small H2H samples and
    meaningful model/market disagreement.
-5. Return final_p_over within the allowed ±{band:.0%} band.
-6. Choose bet only when the edge remains robust after scrutiny; otherwise pass.
+5. Return final_p_over within the allowed ±{band:.0%} band and never strengthen
+   the simulator's side.
+6. Choose bet only to affirm an existing simulator candidate; otherwise pass.
 
 The rationale must use the labels WHY LINE EXISTS; SUPPORT; COUNTERARGUMENT;
 DATA QUALITY; ACTION.""".replace("{pipeline_version}", PIPELINE_VERSION)

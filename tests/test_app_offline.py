@@ -8,7 +8,7 @@ add/delete, and the admin gate.
 """
 import sys
 import tempfile
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,8 +33,8 @@ app.config["TESTING"] = True
 import db as propdb
 propdb.DB_PATH = tmp / "app.db"
 
-today = date.today().isoformat()
-yest = (date.today() - timedelta(days=1)).isoformat()
+today = appmod.mlb_today().isoformat()
+yest = (appmod.mlb_today() - timedelta(days=1)).isoformat()
 
 
 def mkrow(gd, src, p_over, bet="over", kelly=0.02):
@@ -45,6 +45,7 @@ def mkrow(gd, src, p_over, bet="over", kelly=0.02):
             "book": "BookA", "over_odds": -110, "under_odds": -110,
             "market_p_over": 0.5, "edge_over": p_over - 0.5,
             "edge_under": 0.5 - p_over, "bet_side": bet, "kelly_frac": kelly,
+            "policy_version": "accuracy_v2",
             "rationale": '{"action":"bet","rationale":"deep start likely"}'
                          if src != "sim" else None}
 

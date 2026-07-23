@@ -7,21 +7,24 @@ Flow per probable starter:
 
 Synthetic no-book rows remain observable but are never eligible bets.
 """
+import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import calibration
 import data_today
 import db
+import decision
 import form
 import simulator
-from betting_math import consensus_p_over, kelly_fraction
+from betting_math import consensus_p_over
 from factors import park_k_factor, ump_k_factor
+from timeutils import slate_today
 
 # A 3% point-estimate discrepancy was too permissive for a noisy, incomplete
 # model. Six percentage points is the default minimum after calibration.
-MIN_EDGE = float(os.getenv("MLB_MIN_EDGE", "0.06"))
+MIN_EDGE = decision.MIN_EDGE
 N_SIMS = int(os.getenv("MLB_N_SIMS", "20000"))
 
 
@@ -31,6 +34,7 @@ def _norm(name):
 
 def _lineup_rates(batter_ids, pitcher_hand):
     """Per-PA rates for the nine batters; league average when unposted."""
+    confirmed = decision.complete_lineup(batter_ids)
     if not batter_ids:
         return [dict(data_today.LEAGUE) for _ in range(9)], False
     lineup = [
@@ -39,7 +43,7 @@ def _lineup_rates(batter_ids, pitcher_hand):
     ]
     while len(lineup) < 9:
         lineup.append(dict(data_today.LEAGUE))
-    return lineup, True
+    return lineup, confirmed
 
 
 def simulate_pitcher(
@@ -48,9 +52,15 @@ def simulate_pitcher(
     k_park=1.0,
     k_ump=1.0,
     n_sims=N_SIMS,
+    game_date=None,
 ):
     """Simulate one starter end-to-end from serving-time data."""
-    profile = data_today.get_pitcher_profile(pitcher["id"])
+    try:
+        profile = data_today.get_pitcher_profile(
+            pitcher["id"], as_of_date=game_date
+        )
+    except TypeError:
+        profile = data_today.get_pitcher_profile(pitcher["id"])
     lineup, confirmed = _lineup_rates(opp_lineup_ids, pitcher["hand"])
     k_rate = form.blended_k_rate(pitcher["id"], profile["k"])
     k_form = form.velo_k_factor(pitcher["id"])
@@ -58,26 +68,39 @@ def simulate_pitcher(
         {"k": k_rate, "bb": profile["bb"], "hit": profile["hit"]},
         lineup,
         recent_pitch_counts=profile["recent_pitch_counts"],
+        recent_starts=profile.get("recent_starts"),
         k_park=k_park,
         k_ump=k_ump,
         k_form=k_form,
         n_sims=n_sims,
     )
+    workload = profile.get("workload") or {
+        "confirmed": False,
+        "reasons": ["dated recent-start workload evidence unavailable"],
+    }
+    quality_reasons = []
+    if not confirmed:
+        quality_reasons.append(
+            "opposing starting lineup is not complete (nine hitters)"
+        )
+    quality_reasons.extend(workload.get("reasons") or [])
     return ks, outs, {
         "confirmed": confirmed,
+        "workload": workload,
+        "quality_reasons": quality_reasons,
         "k_form": k_form,
         "recent_pitch_counts": profile["recent_pitch_counts"],
     }
 
 
 def predict_date(game_date=None, n_sims=N_SIMS):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conn = db.connect()
     db.ensure_schema(conn)
 
     lines_by_player = {}
-    for row in db.latest_lines(conn, game_date):
+    for row in db.active_lines(conn, game_date):
         key = (_norm(row["player_name"]), row["market"])
         lines_by_player.setdefault(key, []).append(row)
 
@@ -86,6 +109,7 @@ def predict_date(game_date=None, n_sims=N_SIMS):
     n_logged = 0
 
     for game in games:
+        game_reasons = data_today.game_gate_reasons(game, game_date)
         k_park = park_k_factor(game["home_team"])
         ump_name = data_today.get_home_plate_umpire(game["game_pk"])
         k_ump = ump_k_factor(ump_name)
@@ -104,6 +128,7 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                     k_park=k_park,
                     k_ump=k_ump,
                     n_sims=n_sims,
+                    game_date=game_date,
                 )
             except Exception as exc:
                 print(f"[predict] {pitcher['name']}: failed ({exc})")
@@ -121,7 +146,7 @@ def predict_date(game_date=None, n_sims=N_SIMS):
                     market,
                     arr,
                     rows,
-                    allow_bet=bool(meta["confirmed"]),
+                    quality_reasons=game_reasons + meta["quality_reasons"],
                 )
             print(
                 f"[predict] {pitcher['name']} ({side}, "
@@ -138,7 +163,12 @@ def predict_date(game_date=None, n_sims=N_SIMS):
 
 def _calibrated_sides(conn, raw_p_over, market, game_date):
     p_over = calibration.calibrated_probability(
-        conn, raw_p_over, market, "sim", as_of_date=game_date
+        conn,
+        raw_p_over,
+        market,
+        "sim",
+        as_of_date=game_date,
+        policy_version=decision.POLICY_VERSION,
     )
     return p_over, 1.0 - p_over
 
@@ -152,7 +182,7 @@ def _log_market(
     market,
     arr,
     line_rows,
-    allow_bet=True,
+    quality_reasons=(),
 ):
     logged = 0
     base = {
@@ -164,17 +194,21 @@ def _log_market(
         "player_id": pitcher["id"],
         "market": market,
         "source": "sim",
-        "rationale": None,
+        "policy_version": decision.POLICY_VERSION,
     }
 
     if not line_rows:
         mean = float(arr.mean())
         line = round(mean - 0.5) + 0.5
-        raw_p_over, _, _ = simulator.prob_over(arr, line)
+        raw_p_over, _, p_push = simulator.prob_over(arr, line)
+        reasons = list(quality_reasons) + ["no live two-way market anchor"]
         db.insert_prediction(conn, {
             **base,
             "line": line,
             "p_over": raw_p_over,
+            "raw_p_over": raw_p_over,
+            "decision_p_over": raw_p_over,
+            "p_push": p_push,
             "mean": mean,
             "book": None,
             "over_odds": None,
@@ -182,8 +216,14 @@ def _log_market(
             "market_p_over": None,
             "edge_over": None,
             "edge_under": None,
+            "candidate_side": None,
             "bet_side": None,
             "kelly_frac": 0.0,
+            "rationale": json.dumps({
+                "rationale": "; ".join(reasons),
+                "hold_reasons": reasons,
+            }),
+            "quality_json": json.dumps({"hold_reasons": reasons}),
         })
         return 1
 
@@ -192,54 +232,82 @@ def _log_market(
         by_line.setdefault(row["line"], []).append(row)
 
     for line, books in by_line.items():
-        raw_p_over, _, _ = simulator.prob_over(arr, line)
+        raw_p_over, _, p_push = simulator.prob_over(arr, line)
         p_over, p_under = _calibrated_sides(
             conn, raw_p_over, market, game_date
         )
         market_p = consensus_p_over(
             [(book["over_odds"], book["under_odds"]) for book in books]
         )
-        edge_over = p_over - market_p if market_p is not None else None
-        edge_under = (
-            p_under - (1.0 - market_p) if market_p is not None else None
+        priced_books = {
+            book["book"]
+            for book in books
+            if book["over_odds"] is not None and book["under_odds"] is not None
+        }
+        validation = calibration.validation_status(
+            conn,
+            market,
+            "sim",
+            as_of_date=game_date,
+            policy_version=decision.POLICY_VERSION,
+        )
+        call = decision.decide(
+            p_over,
+            market_p,
+            book_count=len(priced_books),
+            validation=validation,
+            quality_reasons=quality_reasons,
         )
 
-        bet_side, kelly, best = None, 0.0, None
-        if allow_bet and edge_over is not None:
-            if edge_over >= MIN_EDGE and edge_over >= (edge_under or 0.0):
-                bet_side = "over"
-                best = _best_price(books, "over_odds")
-                kelly = kelly_fraction(p_over, best and best["over_odds"])
-            elif edge_under is not None and edge_under >= MIN_EDGE:
-                bet_side = "under"
-                best = _best_price(books, "under_odds")
-                kelly = kelly_fraction(p_under, best and best["under_odds"])
+        candidate_side, bet_side, kelly, best = call.bet_side, None, 0.0, None
+        if call.bet_side == "over":
+            best = _best_price(books, "over_odds")
+        elif call.bet_side == "under":
+            best = _best_price(books, "under_odds")
         if best is None:
             best = books[0]
 
-        rationale = None
-        if not allow_bet:
-            rationale = "HOLD: opposing lineup not confirmed"
-        elif abs(p_over - raw_p_over) >= 0.005:
-            rationale = (
+        rationale_parts = list(call.hold_reasons)
+        if candidate_side:
+            rationale_parts.append(
+                "candidate only: awaiting independent LLM safety-judge confirmation"
+            )
+        if abs(p_over - raw_p_over) >= 0.005:
+            rationale_parts.append(
                 f"calibrated from raw P(over) {raw_p_over:.3f} "
                 f"to {p_over:.3f}"
             )
+        rationale = json.dumps({
+            "rationale": "; ".join(rationale_parts),
+            "hold_reasons": list(call.hold_reasons),
+            "validation": validation,
+            "model_p_over": p_over,
+            "decision_p_over": call.decision_p_over,
+        })
 
         db.insert_prediction(conn, {
             **base,
             "line": line,
             "p_over": p_over,
+            "raw_p_over": raw_p_over,
+            "decision_p_over": call.decision_p_over,
+            "p_push": p_push,
             "mean": float(arr.mean()),
             "book": best["book"],
             "over_odds": best["over_odds"],
             "under_odds": best["under_odds"],
             "market_p_over": market_p,
-            "edge_over": edge_over,
-            "edge_under": edge_under,
+            "edge_over": call.edge_over,
+            "edge_under": call.edge_under,
+            "candidate_side": candidate_side,
             "bet_side": bet_side,
             "kelly_frac": kelly,
             "rationale": rationale,
+            "quality_json": json.dumps({
+                "hold_reasons": list(call.hold_reasons),
+                "validation": validation,
+                "book_count": len(priced_books),
+            }),
         })
         logged += 1
     return logged

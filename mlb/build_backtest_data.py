@@ -15,11 +15,13 @@ For each completed game we record, per starting pitcher:
   * park + home-plate-umpire K factors
   * the ACTUAL strikeouts and outs the starter recorded
 
-StatsAPI carries no betting odds, so rows have no `lines[].over_odds`: the
-backtest reports calibration / log-loss / Brier (the honest signal test). To
-add ROI/CLV, merge in closing lines from an odds archive keyed by
-(game_date, pitcher, market, line).
+StatsAPI carries no betting lines or odds, so rows intentionally have an empty
+``lines`` list. Merge a timestamped odds archive keyed by
+(game_date, pitcher, market, line) before evaluating calibration, ROI, or CLV.
+The optional diagnostic-line mode derives thresholds from the realized result
+and is explicitly invalid as predictive evidence.
 """
+
 import argparse
 import json
 from datetime import date, timedelta
@@ -48,13 +50,17 @@ def _final_game_pks(game_date):
     return pks
 
 
-def _lines_for(actual_ks, actual_outs):
-    """Synthetic .5 lines bracketing the actual result, so calibration is
-    measured across a spread of probabilities. Replace with real posted lines
-    when you have them."""
+def _diagnostic_lines_for(actual_ks, actual_outs):
+    """Outcome-derived lines for engine diagnostics only.
+
+    These lines leak the realized result and must never be used as evidence of
+    predictive accuracy, calibration, or profitability.
+    """
     lines = []
-    for market, center in (("pitcher_strikeouts", actual_ks),
-                           ("pitcher_outs", actual_outs)):
+    for market, center in (
+        ("pitcher_strikeouts", actual_ks),
+        ("pitcher_outs", actual_outs),
+    ):
         base = round(center)
         for off in (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5):
             line = base + off
@@ -63,14 +69,18 @@ def _lines_for(actual_ks, actual_outs):
     return lines
 
 
-def build_game(game_pk, home_team_name=None):
+def build_game(game_pk, home_team_name=None, include_diagnostic_lines=False):
     box = _get(f"/game/{game_pk}/boxscore")
     gdate = None
     try:
-        gdate = _get(f"/schedule", gamePk=game_pk)["dates"][0]["games"][0]["gameDate"][:10]
+        gdate = _get("/schedule", gamePk=game_pk)["dates"][0]["games"][0]["gameDate"][
+            :10
+        ]
     except (KeyError, IndexError, requests.RequestException):
         pass
-    prev_season = (date.fromisoformat(gdate).year - 1) if gdate else date.today().year - 1
+    prev_season = (
+        (date.fromisoformat(gdate).year - 1) if gdate else date.today().year - 1
+    )
 
     hp_ump = None
     for off in box.get("officials", []):
@@ -78,8 +88,11 @@ def build_game(game_pk, home_team_name=None):
             hp_ump = (off.get("official") or {}).get("fullName")
     k_ump = factors.ump_k_factor(hp_ump)
 
-    home_name = (box.get("teams", {}).get("home", {}).get("team", {}) or {}).get("name") \
-        or home_team_name or ""
+    home_name = (
+        (box.get("teams", {}).get("home", {}).get("team", {}) or {}).get("name")
+        or home_team_name
+        or ""
+    )
     k_park = factors.park_k_factor(home_name)
 
     rows = []
@@ -106,19 +119,32 @@ def build_game(game_pk, home_team_name=None):
         while len(lineup) < 9:
             lineup.append(dict(data_today.LEAGUE))
 
-        rows.append({
-            "game_date": gdate, "pitcher_name": name,
-            "pitcher": {"k": profile["k"], "bb": profile["bb"], "hit": profile["hit"]},
-            "lineup": lineup,
-            "recent_pitch_counts": profile["recent_pitch_counts"],
-            "k_park": k_park, "k_ump": k_ump,
-            "actual_ks": actual_ks, "actual_outs": actual_outs,
-            "lines": _lines_for(actual_ks, actual_outs),
-        })
+        rows.append(
+            {
+                "game_date": gdate,
+                "pitcher_name": name,
+                "pitcher": {
+                    "k": profile["k"],
+                    "bb": profile["bb"],
+                    "hit": profile["hit"],
+                },
+                "lineup": lineup,
+                "recent_pitch_counts": profile["recent_pitch_counts"],
+                "k_park": k_park,
+                "k_ump": k_ump,
+                "actual_ks": actual_ks,
+                "actual_outs": actual_outs,
+                "lines": (
+                    _diagnostic_lines_for(actual_ks, actual_outs)
+                    if include_diagnostic_lines
+                    else []
+                ),
+            }
+        )
     return rows
 
 
-def build_range(start, end, out_path):
+def build_range(start, end, out_path, include_diagnostic_lines=False):
     d0, d1 = date.fromisoformat(start), date.fromisoformat(end)
     dataset = []
     day = d0
@@ -130,7 +156,12 @@ def build_range(start, end, out_path):
             pks = []
         for pk in pks:
             try:
-                dataset.extend(build_game(pk))
+                dataset.extend(
+                    build_game(
+                        pk,
+                        include_diagnostic_lines=include_diagnostic_lines,
+                    )
+                )
             except Exception as e:
                 print(f"  game {pk}: skipped ({e})")
         print(f"{ds}: {len(pks)} finals -> {len(dataset)} starts total")
@@ -147,5 +178,18 @@ if __name__ == "__main__":
     ap.add_argument("start")
     ap.add_argument("end")
     ap.add_argument("--out", default="mlb/cache/backtest.json")
+    ap.add_argument(
+        "--diagnostic-lines",
+        action="store_true",
+        help=(
+            "attach outcome-derived lines for code diagnostics only; "
+            "invalid for accuracy/ROI claims"
+        ),
+    )
     args = ap.parse_args()
-    build_range(args.start, args.end, args.out)
+    build_range(
+        args.start,
+        args.end,
+        args.out,
+        include_diagnostic_lines=args.diagnostic_lines,
+    )

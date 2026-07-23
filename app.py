@@ -1,9 +1,10 @@
 import csv
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, render_template, request, redirect, url_for, flash, g, abort
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -13,6 +14,14 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+
+def mlb_today():
+    try:
+        zone = ZoneInfo(os.getenv("MLB_SLATE_TIMEZONE", "America/New_York"))
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("America/New_York")
+    return datetime.now(zone).date()
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 # set SECRET_KEY in .env for production; the fallback is dev-only
@@ -24,7 +33,12 @@ ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").sp
 # minimum edge vs de-vigged market before a pick is surfaced
 MIN_EDGE = 0.03
 
-DB_PATH = Path(__file__).resolve().parent / "sportsaid.db"
+DB_PATH = Path(
+    os.getenv(
+        "SPORTSAID_DB_PATH",
+        str(Path(__file__).resolve().parent / "sportsaid.db"),
+    )
+).expanduser()
 NBA_PROBS_PATH = Path(__file__).resolve().parent / "nba" / "current_games_with_probs.csv"
 
 NBA_ABBR = {
@@ -238,10 +252,10 @@ def load_ev_picks(db):
     return picks
 
 # latest MLB prop predictions for a date (most recent pipeline run only).
-# per (player, market, line) the judge's decision wins when present,
-# then the llm lane, then the raw simulator row.
+# Per prop, the simulator is canonical unless the adversarial judge has
+# reviewed it. The analysis-only LLM lane must never hide/create a decision.
 def load_mlb_props(db, game_date=None, bets_only=False):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or mlb_today().isoformat()
     try:
         run = db.execute(
             "SELECT MAX(run_id) r FROM prop_predictions WHERE game_date = ?",
@@ -257,7 +271,7 @@ def load_mlb_props(db, game_date=None, bets_only=False):
         (game_date, run["r"]),
     ).fetchall()
 
-    rank = {"sim": 0, "llm": 1, "judge": 2}
+    rank = {"llm": 0, "sim": 1, "judge": 2}
     best = {}
     sim_means = {}
     lane_probs = {}   # key -> {source: p_over} for the three-way comparison
@@ -277,6 +291,17 @@ def load_mlb_props(db, game_date=None, bets_only=False):
         d = dict(r)
         d["market_label"] = "Strikeouts" if r["market"] == "pitcher_strikeouts" else "Pitcher Outs"
         d["edge"] = max(r["edge_over"] or 0, r["edge_under"] or 0) if r["edge_over"] is not None else None
+        d["model_edge"] = (
+            abs(r["p_over"] - r["market_p_over"])
+            if r["market_p_over"] is not None
+            else None
+        )
+        d["decision_p_over"] = (
+            r["decision_p_over"]
+            if "decision_p_over" in r.keys()
+            and r["decision_p_over"] is not None
+            else r["p_over"]
+        )
         d["lane"] = r["source"]                       # which lane made the call
         d["lanes"] = lane_probs.get(key, {})          # sim/llm/judge P(over) side by side
         if d.get("mean") is None:
@@ -287,6 +312,7 @@ def load_mlb_props(db, game_date=None, bets_only=False):
                 meta = json.loads(d["rationale"])
                 d["rationale_text"] = meta.get("rationale") or ""
                 d["judge_action"] = meta.get("action")
+                d["hold_reasons"] = meta.get("hold_reasons") or []
             except (ValueError, TypeError):
                 d["rationale_text"] = d["rationale"]
         props.append(d)
@@ -298,7 +324,7 @@ def load_mlb_props(db, game_date=None, bets_only=False):
 # off the simulator distribution vs the parlay break-even. Kept apart from the
 # sportsbook board above so the two are never conflated.
 def load_prizepicks_board(db, game_date=None, playable_only=False):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or mlb_today().isoformat()
     try:
         run = db.execute(
             "SELECT MAX(run_id) r FROM prizepicks_picks WHERE game_date = ?",
@@ -325,14 +351,56 @@ def load_prizepicks_board(db, game_date=None, playable_only=False):
     return picks
 
 
+def load_prizepicks_cards(db, game_date=None, playable_only=True):
+    """Actual entry-level decisions with the configured displayed payout."""
+    game_date = game_date or mlb_today().isoformat()
+    try:
+        run = db.execute(
+            "SELECT MAX(run_id) r FROM prizepicks_cards WHERE game_date = ?",
+            (game_date,),
+        ).fetchone()
+        if not run or not run["r"]:
+            return []
+        clause = "AND c.playable = 1" if playable_only else ""
+        rows = db.execute(
+            f"""SELECT c.*, p1.player_name AS player_1,
+                       p1.market AS market_1, p1.line AS line_1,
+                       p1.pick_side AS side_1,
+                       p2.player_name AS player_2,
+                       p2.market AS market_2, p2.line AS line_2,
+                       p2.pick_side AS side_2
+                FROM prizepicks_cards c
+                JOIN prizepicks_picks p1 ON p1.id = c.pick_1_id
+                JOIN prizepicks_picks p2 ON p2.id = c.pick_2_id
+                WHERE c.game_date = ? AND c.run_id = ? {clause}
+                ORDER BY c.expected_value DESC""",
+            (game_date, run["r"]),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(row) for row in rows]
+
+
 # per-lane real-money scorecard over a trailing window — which lane to trust.
 # ROI is profit (already at each bet's logged Kelly stake) divided by total
 # staked; CLV is the honest "did we beat the close" signal.
 def load_lane_scoreboard(db, days=14):
-    since = (date.today() - timedelta(days=days)).isoformat()
+    since = (mlb_today() - timedelta(days=days)).isoformat()
     try:
         rows = db.execute(
-            """SELECT p.source,
+            """WITH ranked AS (
+                 SELECT p.*,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY p.game_date, COALESCE(p.game_pk,-1),
+                                       LOWER(p.player_name), p.market, p.line,
+                                       p.source, COALESCE(p.policy_version,'legacy')
+                          ORDER BY p.created_at DESC, p.id DESC
+                        ) AS recency_rank
+                 FROM prop_predictions p
+                 WHERE p.game_date >= ?
+                   AND COALESCE(p.policy_version,'legacy') = 'accuracy_v2'
+               )
+               SELECT p.source,
                       COUNT(*)                                    AS graded,
                       SUM(CASE WHEN p.bet_side IS NOT NULL THEN 1 ELSE 0 END) AS bets,
                       SUM(COALESCE(r.bet_won, 0))                 AS wins,
@@ -341,9 +409,9 @@ def load_lane_scoreboard(db, days=14):
                       AVG(r.clv)                                  AS avg_clv,
                       AVG(CASE WHEN r.clv IS NOT NULL AND r.clv > 0 THEN 1.0
                                WHEN r.clv IS NOT NULL THEN 0.0 END) AS clv_beat_rate
-               FROM prop_predictions p
+               FROM ranked p
                JOIN prop_results r ON r.prediction_id = p.id
-               WHERE p.game_date >= ?
+               WHERE p.recency_rank = 1
                GROUP BY p.source""",
             (since,),
         ).fetchall()
@@ -370,20 +438,15 @@ def load_lane_scoreboard(db, days=14):
     return board
 
 
-# PrizePicks has no two-way price, Kelly stake, or closing line, so it can't
-# share the query above. We score its playable picks against the SAME parlay
-# break-even they were selected on: treat each leg as a flat 1u bet at the
-# break-even's fair decimal odds (1/breakeven). ROI then reads as ">0 iff the
-# lane's realized win rate beat its break-even" — an honest, comparable number.
-# CLV is N/A (no market close) and shows as "—".
+# PrizePicks is scored at the actual entry/card level. Per-leg pseudo-ROI would
+# ignore ties and the displayed multiplier, so it is deliberately not used.
 def _prizepicks_lane_row(db, since):
     try:
         rows = db.execute(
-            """SELECT p.breakeven, r.pick_won
-               FROM prizepicks_picks p
-               JOIN prizepicks_results r ON r.pick_id = p.id
-               WHERE p.game_date >= ? AND p.playable = 1
-                 AND r.pick_won IS NOT NULL""",
+            """SELECT c.id, r.outcome, r.profit_units
+               FROM prizepicks_cards c
+               JOIN prizepicks_card_results r ON r.card_id = c.id
+               WHERE c.game_date >= ? AND c.playable = 1""",
             (since,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -391,16 +454,15 @@ def _prizepicks_lane_row(db, since):
     if not rows:
         return None
     n = len(rows)
-    wins = sum(r["pick_won"] for r in rows)
-    pnl = sum((1.0 / r["breakeven"] - 1.0) if r["pick_won"] else -1.0
-              for r in rows)
+    wins = sum(1 for r in rows if r["outcome"] == "win")
+    pnl = sum(float(r["profit_units"] or 0.0) for r in rows)
     return {
         "source": "prizepicks",
         "bets": n,
         "wins": wins,
         "hit_rate": wins / n,
         "pnl": pnl,
-        "roi": pnl / n,          # flat 1u per leg
+        "roi": pnl / n,
         "avg_clv": None,         # no two-way market / closing line
         "clv_beat_rate": None,
     }
@@ -522,6 +584,7 @@ def index():
     ev_picks = load_ev_picks(db)
     mlb_props = load_mlb_props(db)
     prizepicks_picks = load_prizepicks_board(db)
+    prizepicks_cards = load_prizepicks_cards(db)
     mlb_scoreboard = load_lane_scoreboard(db)
     return render_template(
         "index.html",
@@ -529,6 +592,7 @@ def index():
         ev_picks=ev_picks,
         mlb_props=mlb_props,
         prizepicks_picks=prizepicks_picks,
+        prizepicks_cards=prizepicks_cards,
         mlb_scoreboard=mlb_scoreboard,
         leagues=leagues,
         active_league=active_league,
