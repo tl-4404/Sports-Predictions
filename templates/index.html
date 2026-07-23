@@ -67,7 +67,7 @@
   {% if mlb_props %}
   <section>
     <h2 class="section-title">Sportsbook pitcher props</h2>
-    <p class="muted" style="margin:-6px 0 10px;">Best sportsbook line per prop, edge vs the de-vigged multi-book consensus. Judge decision shown when available, else Claude, else simulator. The Sim / LLM / Judge columns compare all three lanes on the same line.</p>
+    <p class="muted" style="margin:-6px 0 10px;">The simulator is the canonical numeric lane; the LLM is analysis-only and the judge can only weaken or veto an existing simulator candidate. “Edge” is zero while a row is held by data, validation, or market-gap gates.</p>
     <div class="table-scroll">
       <table class="table">
         <thead>
@@ -80,7 +80,8 @@
             <th scope="col" title="Claude predictor P(over)">LLM</th>
             <th scope="col" title="Judge P(over) — the decision">Judge</th>
             <th scope="col">Market</th>
-            <th scope="col">Edge</th>
+            <th scope="col" title="Raw calibrated model discrepancy from market">Model gap</th>
+            <th scope="col" title="Actionable edge after all gates">Edge</th>
             <th scope="col">Decision</th>
             <th scope="col">Bet</th>
             <th scope="col">Stake</th>
@@ -97,6 +98,7 @@
             <td data-label="LLM">{{ "%.0f%%"|format(p.lanes.llm * 100) if p.lanes.llm is not none else "—" }}</td>
             <td data-label="Judge"><strong>{{ "%.0f%%"|format(p.lanes.judge * 100) if p.lanes.judge is not none else "—" }}</strong></td>
             <td data-label="Market">{{ "%.0f%%"|format(p.market_p_over * 100) if p.market_p_over is not none else "no lines" }}</td>
+            <td data-label="Model gap">{{ "%.1f%%"|format(p.model_edge * 100) if p.model_edge is not none else "—" }}</td>
             <td data-label="Edge">{{ "%+.1f%%"|format(p.edge * 100) if p.edge is not none else "—" }}</td>
             <td data-label="Decision">
               <span class="badge">{{ p.lane|capitalize }}</span>
@@ -106,8 +108,10 @@
               {% if p.bet_side %}
                 <span class="badge">{{ p.bet_side|capitalize }} {{ p.line }}
                   @ {{ p.over_odds if p.bet_side == 'over' else p.under_odds }} ({{ p.book }})</span>
+              {% elif p.candidate_side %}
+                <span class="badge badge-warn">Candidate {{ p.candidate_side|capitalize }} · awaiting judge</span>
               {% else %}
-                <span class="muted">pass</span>
+                <span class="muted" title="{{ p.rationale_text or '' }}">HOLD</span>
               {% endif %}
             </td>
             <td data-label="Stake">
@@ -126,8 +130,8 @@
   <section>
     <h2 class="section-title">PrizePicks best lines</h2>
     <p class="muted" style="margin:-6px 0 10px;">
-      Separate from the sportsbooks: pick'em projections (no two-way odds) scored off the simulator distribution.
-      <span class="badge">Play</span> clears the {{ "%.1f%%"|format(prizepicks_picks[0].breakeven * 100) }} per-leg break-even for a 2-pick power play; payouts are fixed by parlay size, not price.
+      Every leg requires an exact fresh two-way sportsbook anchor. A leg is never a standalone play:
+      <span class="badge">Card-qualified</span> means it belongs to a cross-game 2-pick entry whose configured displayed payout, tie value, and full-card EV clear the 8% gate.
     </p>
     <div class="table-scroll">
       <table class="table">
@@ -138,8 +142,9 @@
             <th scope="col">PP line</th>
             <th scope="col">Pick</th>
             <th scope="col" title="Simulator probability of the picked side">P(pick)</th>
-            <th scope="col" title="P(pick) minus the parlay break-even">Edge</th>
-            <th scope="col">Play?</th>
+            <th scope="col" title="Probability of landing exactly on the projection">Push</th>
+            <th scope="col" title="Unconditional leg probability minus reference 3x break-even">Reference gap</th>
+            <th scope="col">Status</th>
           </tr>
         </thead>
         <tbody>
@@ -150,10 +155,40 @@
             <td data-label="PP line">{{ p.line }}</td>
             <td data-label="Pick"><span class="badge">{{ p.pick_side|capitalize }}</span></td>
             <td data-label="P(pick)">{{ "%.0f%%"|format(p.p_pick * 100) }}</td>
+            <td data-label="Push">{{ "%.0f%%"|format((p.p_push or 0) * 100) }}</td>
             <td data-label="Edge">{{ "%+.1f%%"|format(p.edge * 100) }}</td>
-            <td data-label="Play?">
-              {% if p.playable %}<span class="badge">Play</span>{% else %}<span class="muted">pass</span>{% endif %}
+            <td data-label="Status" title="{{ p.hold_reason or '' }}">
+              {% if p.playable %}<span class="badge">Card-qualified</span>{% elif p.candidate %}<span class="badge badge-warn">Needs card EV</span>{% else %}<span class="muted">HOLD</span>{% endif %}
             </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if prizepicks_cards %}
+  <section>
+    <h2 class="section-title">PrizePicks card decisions</h2>
+    <p class="muted" style="margin:-6px 0 10px;">Only these entry-level combinations are authorized by the pipeline. Recheck the displayed multiplier and both live projections before submission.</p>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Leg 1</th>
+            <th scope="col">Leg 2</th>
+            <th scope="col">Payout</th>
+            <th scope="col">Card EV</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in prizepicks_cards %}
+          <tr>
+            <td data-label="Leg 1">{{ c.player_1 }} {{ c.side_1|capitalize }} {{ c.line_1 }}</td>
+            <td data-label="Leg 2">{{ c.player_2 }} {{ c.side_2|capitalize }} {{ c.line_2 }}</td>
+            <td data-label="Payout">{{ "%.2gx"|format(c.multiplier) }}</td>
+            <td data-label="Card EV"><strong>{{ "%+.1f%%"|format(c.expected_value * 100) }}</strong></td>
           </tr>
           {% endfor %}
         </tbody>

@@ -11,10 +11,14 @@ caches. Every check is isolated so one failure can't mask the others.
 Exit code is non-zero when any hard FAIL is present (handy in scripts/CI).
 """
 import os
-from datetime import date
 from pathlib import Path
+from timeutils import slate_today
 
 OK, WARN, FAIL = "ok", "warn", "fail"
+
+
+def _truthy(name):
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _check_deps():
@@ -39,7 +43,7 @@ def _check_anthropic():
 def _check_statsapi():
     try:
         import data_today
-        games = data_today.get_schedule(date.today().isoformat())
+        games = data_today.get_schedule(slate_today())
         return OK, f"reachable — {len(games)} games today"
     except Exception as e:
         return FAIL, f"unreachable: {_short(e)} (predict/prizepicks/grade need it)"
@@ -60,6 +64,8 @@ def _check_odds():
         books = sorted({r["book"] for r in rows})
         if not rows:
             return FAIL, "scraper returned 0 rows (verify DK/FD ids; Cloudflare/geo?)"
+        if len(books) < 2:
+            return FAIL, f"only one live book ({', '.join(books)}); two are required"
         return OK, f"scraper live — {len(rows)} lines from {', '.join(books)}"
     except Exception as e:
         return FAIL, f"scraper failed: {_short(e)}"
@@ -67,8 +73,15 @@ def _check_odds():
 
 def _check_prizepicks():
     import prizepicks
-    if not os.getenv("PRIZEPICKS_LIVE"):
-        return WARN, "PRIZEPICKS_LIVE unset — offline stub (set it for live PrizePicks)"
+    if not _truthy("PRIZEPICKS_LIVE"):
+        return WARN, "PRIZEPICKS_LIVE disabled — offline stub"
+    if not os.getenv("PRIZEPICKS_STATE_CODE", "").strip():
+        return FAIL, "PRIZEPICKS_STATE_CODE is required for a jurisdiction-correct board"
+    if prizepicks._configured_card_terms() is None:
+        return FAIL, (
+            "set displayed PRIZEPICKS_2_PICK_MULTIPLIER and "
+            "PRIZEPICKS_TIE_WIN_MULTIPLIER"
+        )
     try:
         rows = prizepicks.PrizePicksFetcher().fetch()
         if not rows:
@@ -88,6 +101,47 @@ def _check_caches():
     return OK, f"present: {', '.join(present)}"
 
 
+def _check_database():
+    import db
+    configured = os.getenv("SPORTSAID_DB_PATH")
+    if not configured:
+        return WARN, (
+            f"using repo-local {db.DB_PATH}; set SPORTSAID_DB_PATH to durable "
+            "storage before hosted runs"
+        )
+    try:
+        conn = db.connect()
+        db.ensure_schema(conn)
+        conn.close()
+    except Exception as exc:
+        return FAIL, f"database unavailable: {_short(exc)}"
+    return OK, f"durable database path configured: {db.DB_PATH}"
+
+
+def _check_validation():
+    import calibration
+    import db
+    import decision
+    conn = db.connect()
+    db.ensure_schema(conn)
+    statuses = {
+        market: calibration.validation_status(conn, market)
+        for market in db.MARKETS
+    }
+    conn.close()
+    blocked = [
+        f"{market} {status['sample_size']}/{decision.MIN_VALIDATION_ROWS}"
+        for market, status in statuses.items()
+        if decision.validation_reason(status)
+    ]
+    if blocked:
+        return WARN, (
+            "paper/market-only mode; automatic bets disabled: "
+            + ", ".join(blocked)
+        )
+    return OK, "accuracy_v2 has sufficient market-beating validation"
+
+
 CHECKS = [
     ("python deps", _check_deps),
     ("anthropic (LLM)", _check_anthropic),
@@ -95,6 +149,8 @@ CHECKS = [
     ("odds source", _check_odds),
     ("prizepicks", _check_prizepicks),
     ("accuracy caches", _check_caches),
+    ("database", _check_database),
+    ("validation", _check_validation),
 ]
 
 

@@ -110,7 +110,15 @@ synthetic_id = db.insert_prediction(conn, {
     "bet_side": None,
     "kelly_frac": 0.0,
 })
-for prediction_id in (old_id, new_id, synthetic_id):
+ladder_id = db.insert_prediction(conn, {
+    **prediction_base,
+    "run_id": "run-ladder",
+    "created_at": "2026-07-20T16:20:00+00:00",
+    "line": 4.5,
+    "p_over": 0.75,
+    "market_p_over": 0.55,
+})
+for prediction_id in (old_id, new_id, synthetic_id, ladder_id):
     conn.execute(
         """INSERT INTO prop_results
            (prediction_id, graded_at, actual, outcome, bet_won,
@@ -123,6 +131,7 @@ conn.commit()
 eligible = list(calibration._eligible_rows(conn, "2026-07-20"))
 check("repeated reruns count once", len(eligible) == 1, f"(n={len(eligible)})")
 check("latest rerun retained", eligible and abs(eligible[0]["p_over"] - 0.60) < 1e-9)
+check("correlated alternate ladder counts once", len(eligible) == 1)
 check("synthetic no-market row excluded",
       all(row["market_p_over"] is not None for row in eligible))
 

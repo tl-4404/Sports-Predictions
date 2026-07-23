@@ -243,53 +243,53 @@ print("prizepicks lane scorecard:")
 
 conn = db.connect(Path(tempfile.mkdtemp()) / "score.db")
 pp.ensure_schema(conn)
-today = webapp.date.today().isoformat()
+today = webapp.mlb_today().isoformat()
 BE = pp.power_breakeven(2)  # ~0.5774
-# 5 playable graded legs: 4 wins / 1 loss (80% > 57.7% break-even -> +ROI);
-# plus a non-playable pick and a push, which must be excluded from the tally.
-legs = [("more", 1), ("less", 1), ("more", 1), ("more", 1), ("less", 0)]
-for i, (side, won) in enumerate(legs):
-    pid = conn.execute(
+# Seed four entry-level cards. The non-playable card must be excluded.
+pick_ids = []
+for i in range(8):
+    pick_ids.append(conn.execute(
         """INSERT INTO prizepicks_picks
            (run_id, created_at, game_date, game_pk, player_name, player_id,
             market, line, p_over, pick_side, p_pick, breakeven, edge,
             ev_2, ev_3, playable, mean)
-           VALUES ('r1',?,?,1,?,?, 'pitcher_strikeouts',5.5,0.6,?,0.6,?,0.05,0,0,1,0)""",
-        (db.utcnow(), today, f"P{i}", i, side, BE)).lastrowid
+           VALUES ('r1',?,?,?,?,?, 'pitcher_strikeouts',5.5,0.6,'more',
+                   0.6,?,0.05,0,0,1,0)""",
+        (db.utcnow(), today, i + 1, f"P{i}", i, BE)).lastrowid)
+card_outcomes = [
+    (pick_ids[0], pick_ids[1], 1, "win", 2.0),
+    (pick_ids[2], pick_ids[3], 1, "loss", -1.0),
+    (pick_ids[4], pick_ids[5], 1, "tie_win", 0.5),
+    (pick_ids[6], pick_ids[7], 0, "win", 2.0),
+]
+for first, second, playable, outcome, profit in card_outcomes:
+    card_id = conn.execute(
+        """INSERT INTO prizepicks_cards
+           (run_id, created_at, game_date, pick_1_id, pick_2_id, multiplier,
+            tie_multiplier, expected_value, playable, rationale)
+           VALUES ('r1',?,?,?,?,3.0,1.5,0.10,?,'test')""",
+        (db.utcnow(), today, first, second, playable),
+    ).lastrowid
     conn.execute(
-        """INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
-           VALUES (?,?,?,?,?)""",
-        (pid, db.utcnow(), 6, side, won))
-# excluded: a non-playable pick, and a playable push (pick_won NULL)
-pid = conn.execute(
-    """INSERT INTO prizepicks_picks
-       (run_id, created_at, game_date, game_pk, player_name, player_id, market,
-        line, p_over, pick_side, p_pick, breakeven, edge, ev_2, ev_3, playable, mean)
-       VALUES ('r1',?,?,1,'NotPlayable',99,'pitcher_outs',15.5,0.52,'more',0.52,?,-0.05,0,0,0,0)""",
-    (db.utcnow(), today, BE)).lastrowid
-conn.execute("""INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
-                VALUES (?,?,?,?,?)""", (pid, db.utcnow(), 16, "more", 1))
-pid = conn.execute(
-    """INSERT INTO prizepicks_picks
-       (run_id, created_at, game_date, game_pk, player_name, player_id, market,
-        line, p_over, pick_side, p_pick, breakeven, edge, ev_2, ev_3, playable, mean)
-       VALUES ('r1',?,?,1,'Pushy',98,'pitcher_strikeouts',6.0,0.6,'more',0.6,?,0.05,0,0,1,0)""",
-    (db.utcnow(), today, BE)).lastrowid
-conn.execute("""INSERT INTO prizepicks_results (pick_id, graded_at, actual, outcome, pick_won)
-                VALUES (?,?,?,?,?)""", (pid, db.utcnow(), 6, "push", None))
+        """INSERT INTO prizepicks_card_results
+           (card_id, graded_at, outcome, profit_units)
+           VALUES (?,?,?,?)""",
+        (card_id, db.utcnow(), outcome, profit),
+    )
 conn.commit()
 
 board = webapp.load_lane_scoreboard(conn, days=14)
 pp_lane = [r for r in board if r["source"] == "prizepicks"]
 check("prizepicks row present even with no sportsbook lanes", len(pp_lane) == 1)
 row = pp_lane[0]
-check("only playable, decided legs counted (5)", row["bets"] == 5, f"({row['bets']})")
-check("wins counted (4)", row["wins"] == 4, f"({row['wins']})")
-check("hit rate 80%", abs(row["hit_rate"] - 0.8) < 1e-9, f"({row['hit_rate']:.3f})")
-expected_roi = (4 * (1 / BE - 1) - 1) / 5
-check("ROI scored vs break-even", abs(row["roi"] - expected_roi) < 1e-9,
+check("only playable cards counted (3)", row["bets"] == 3, f"({row['bets']})")
+check("full wins counted (1)", row["wins"] == 1, f"({row['wins']})")
+check("card hit rate", abs(row["hit_rate"] - 1 / 3) < 1e-9,
+      f"({row['hit_rate']:.3f})")
+expected_roi = (2.0 - 1.0 + 0.5) / 3
+check("ROI scored from actual card payouts", abs(row["roi"] - expected_roi) < 1e-9,
       f"({row['roi']:+.3f})")
-check("beating break-even -> positive ROI", row["roi"] > 0)
+check("profitable cards -> positive ROI", row["roi"] > 0)
 check("no CLV for pick'em", row["avg_clv"] is None and row["clv_beat_rate"] is None)
 conn.close()
 

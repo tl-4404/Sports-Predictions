@@ -6,6 +6,8 @@ def american_to_prob(odds):
     if odds is None:
         return None
     odds = float(odds)
+    if odds == 0:
+        return None
     if odds > 0:
         return 100.0 / (odds + 100.0)
     return -odds / (-odds + 100.0)
@@ -13,6 +15,8 @@ def american_to_prob(odds):
 
 def american_to_decimal(odds):
     odds = float(odds)
+    if odds == 0:
+        raise ValueError("American odds cannot be zero")
     if odds > 0:
         return 1.0 + odds / 100.0
     return 1.0 + 100.0 / -odds

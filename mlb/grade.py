@@ -4,8 +4,9 @@ For every ungraded prediction on a date:
   * pull the starter's actual Ks / outs from the MLB StatsAPI box score
   * settle over/under/push (void if the pitcher didn't start)
   * compute profit at the logged Kelly stake
-  * compute CLV: our bet-side fair prob minus the de-vigged consensus at the
-    LAST line snapshot before the game — the honest "did we beat the close"
+  * compute CLV: closing de-vigged probability minus entry de-vigged
+    probability on the selected (or paper-tracked) side, using only the last
+    snapshot before first pitch
 
 Run: python mlb/grade.py [YYYY-MM-DD]   (defaults to yesterday)
 """
@@ -15,6 +16,7 @@ from datetime import date, timedelta
 import db
 import data_today
 from betting_math import american_to_decimal, devig_two_way, consensus_p_over
+from timeutils import slate_today
 
 
 def _norm(name):
@@ -22,32 +24,45 @@ def _norm(name):
 
 
 def grade_date(game_date=None):
-    game_date = game_date or (date.today() - timedelta(days=1)).isoformat()
+    game_date = game_date or (
+        date.fromisoformat(slate_today()) - timedelta(days=1)
+    ).isoformat()
     conn = db.connect()
     db.ensure_schema(conn)
     preds = db.ungraded_predictions(conn, game_date)
     if not preds:
         print(f"[grade] nothing ungraded for {game_date}")
+        conn.close()
         return 0
 
-    # actual results, keyed by normalized starter name
-    actuals = {}
-    for g in data_today.get_schedule(game_date):
+    games = data_today.get_schedule(game_date)
+    game_meta = {g["game_pk"]: g for g in games}
+    actuals_by_game = {}
+    failed_games = set()
+    for g in games:
         try:
-            for pid, res in data_today.get_starter_actuals(g["game_pk"]).items():
-                actuals[_norm(res["name"])] = res
+            actuals_by_game[g["game_pk"]] = (
+                data_today.get_starter_actuals(g["game_pk"]) or {}
+            )
         except Exception as e:  # game postponed, boxscore missing, etc.
             print(f"[grade] boxscore {g['game_pk']} failed: {e}")
-
-    # closing consensus per (player, market, line)
-    closing = {}
-    for row in db.latest_lines(conn, game_date):
-        key = (_norm(row["player_name"]), row["market"], row["line"])
-        closing.setdefault(key, []).append((row["over_odds"], row["under_odds"]))
+            failed_games.add(g["game_pk"])
 
     graded = 0
     for p in preds:
-        res = actuals.get(_norm(p["player_name"]))
+        if p["game_pk"] in failed_games or p["game_pk"] not in actuals_by_game:
+            continue
+        game_actuals = actuals_by_game[p["game_pk"]]
+        res = game_actuals.get(p["player_id"])
+        if res is None:
+            res = next(
+                (
+                    row
+                    for row in game_actuals.values()
+                    if _norm(row.get("name")) == _norm(p["player_name"])
+                ),
+                None,
+            )
         stat = "ks" if p["market"] == "pitcher_strikeouts" else "outs"
         actual = res[stat] if res else None
 
@@ -63,13 +78,42 @@ def grade_date(game_date=None):
         if actual is not None:
             bet_won, profit = _settle(p, outcome)
 
-        close_p = consensus_p_over(closing.get(
-            (_norm(p["player_name"]), p["market"], p["line"]), []))
+        start_time = (game_meta.get(p["game_pk"]) or {}).get("start_time")
+        close_rows = (
+            db.closing_lines(
+                conn,
+                game_date,
+                p["player_name"],
+                p["market"],
+                p["line"],
+                start_time,
+            )
+            if start_time
+            else []
+        )
+        close_p = consensus_p_over(
+            [(row["over_odds"], row["under_odds"]) for row in close_rows]
+        )
         clv = None
-        if close_p is not None and p["bet_side"] in ("over", "under"):
-            ours = p["p_over"] if p["bet_side"] == "over" else 1 - p["p_over"]
-            close_side = close_p if p["bet_side"] == "over" else 1 - close_p
-            clv = ours - close_side  # >0: we thought our side better than close did
+        if close_p is not None and p["market_p_over"] is not None:
+            raw_p = (
+                p["raw_p_over"]
+                if "raw_p_over" in p.keys() and p["raw_p_over"] is not None
+                else p["p_over"]
+            )
+            paper_side = (
+                p["bet_side"]
+                if p["bet_side"] in ("over", "under")
+                else "over" if raw_p >= p["market_p_over"] else "under"
+            )
+            entry_side = (
+                p["market_p_over"]
+                if paper_side == "over"
+                else 1.0 - p["market_p_over"]
+            )
+            close_side = close_p if paper_side == "over" else 1.0 - close_p
+            # Positive means the market moved toward the side at a worse price.
+            clv = close_side - entry_side
 
         conn.execute(
             """INSERT INTO prop_results
@@ -105,18 +149,32 @@ def _settle(pred, outcome):
 
 def _print_summary(conn, game_date):
     rows = conn.execute(
-        """SELECT p.source, COUNT(*) n,
+        """WITH ranked AS (
+             SELECT p.*,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY p.game_date, COALESCE(p.game_pk,-1),
+                                   LOWER(p.player_name), p.market, p.line,
+                                   p.source, COALESCE(p.policy_version,'legacy')
+                      ORDER BY p.created_at DESC, p.id DESC
+                    ) AS recency_rank
+             FROM prop_predictions p
+             WHERE p.game_date = ?
+           )
+           SELECT p.source, COALESCE(p.policy_version,'legacy') policy_version,
+                  COUNT(*) n,
                   SUM(CASE WHEN r.bet_won IS NOT NULL THEN 1 ELSE 0 END) bets,
                   SUM(COALESCE(r.bet_won,0)) wins,
                   ROUND(SUM(COALESCE(r.profit_units,0)), 4) pnl,
                   ROUND(AVG(r.clv), 4) avg_clv
-           FROM prop_predictions p JOIN prop_results r ON r.prediction_id = p.id
-           WHERE p.game_date = ?
-           GROUP BY p.source""",
+           FROM ranked p JOIN prop_results r ON r.prediction_id = p.id
+           WHERE p.recency_rank = 1
+           GROUP BY p.source, COALESCE(p.policy_version,'legacy')""",
         (game_date,),
     ).fetchall()
     for r in rows:
-        print(f"[grade] {game_date} {r['source']}: {r['n']} preds, "
+        print(
+              f"[grade] {game_date} {r['source']}/{r['policy_version']}: "
+              f"{r['n']} preds, "
               f"{r['bets'] or 0} bets, {r['wins'] or 0} wins, "
               f"pnl={r['pnl']}, avg CLV={r['avg_clv']}")
 

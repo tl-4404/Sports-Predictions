@@ -8,15 +8,15 @@ the confirmed-lineup rerun.
 from __future__ import annotations
 
 import json
-from datetime import date
 
 import data_today
 import db
 import llm_saved_pipeline as policy
+from timeutils import slate_today
 
 
 def refresh_facts(game_date=None) -> int:
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     policy.base.ensure_facts_schema(conn)
     games = data_today.get_schedule(game_date)

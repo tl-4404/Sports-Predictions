@@ -28,6 +28,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "mlb"))
+from timeutils import slate_today
 
 STAGES = ("odds", "predict", "llm", "prizepicks", "grade", "calibrate", "doctor", "all")
 
@@ -36,7 +37,7 @@ def main():
     ap = argparse.ArgumentParser(description="SportsAid MLB props pipeline")
     ap.add_argument("--stage", choices=STAGES, default="all")
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (default today; grade defaults to yesterday)")
-    ap.add_argument("--sims", type=int, default=10000)
+    ap.add_argument("--sims", type=int, default=20000)
     args = ap.parse_args()
 
     if args.stage == "doctor":
@@ -47,28 +48,42 @@ def main():
 
     failures = []
 
+    odds_ok = True
     if args.stage in ("odds", "all"):
-        _run("odds", failures, lambda: __import__("odds_props").refresh(args.date))
+        odds_ok = _run(
+            "odds",
+            failures,
+            lambda: __import__("odds_props").refresh(args.date),
+            require_positive=True,
+        )
 
-    if args.stage in ("predict", "all"):
+    if args.stage == "predict" or (args.stage == "all" and odds_ok):
         _run("predict", failures,
              lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
+    elif args.stage == "all":
+        print("[pipeline] skipping predict/llm/PrizePicks: no fresh odds snapshot")
 
-    if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
+    if args.stage == "llm" or (
+        args.stage == "all" and odds_ok and os.getenv("ANTHROPIC_API_KEY")
+    ):
         # This runner installs the preserved chat policy and appends a fresh research
         # snapshot on every invocation. The simulator remains fully independent.
         _run("llm", failures,
              lambda: __import__("llm_chat_runner").run_all(args.date))
-    elif args.stage == "all":
+    elif args.stage == "all" and odds_ok:
         print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
-    if args.stage in ("prizepicks", "all"):
-        _run("prizepicks", failures,
-             lambda: __import__("prizepicks").run_all(args.date))
+    if args.stage == "prizepicks" or (args.stage == "all" and odds_ok):
+        _run(
+            "prizepicks",
+            failures,
+            lambda: __import__("prizepicks").run_all(args.date),
+            require_positive=True,
+        )
 
     if args.stage in ("grade", "all"):
         grade_date = args.date if args.stage == "grade" else (
-            (date.today() - timedelta(days=1)).isoformat())
+            (date.fromisoformat(slate_today()) - timedelta(days=1)).isoformat())
         _run("grade", failures,
              lambda: __import__("grade").grade_date(grade_date))
         _run("prizepicks-grade", failures,
@@ -90,15 +105,23 @@ def main():
     print("[pipeline] done")
 
 
-def _run(name, failures, fn):
+def _run(name, failures, fn, require_positive=False):
     print(f"[pipeline] === stage: {name} ===")
     try:
         result = fn()
+        if require_positive and (
+            not isinstance(result, (int, float)) or result <= 0
+        ):
+            print(f"[pipeline] {name}: no usable rows; failing closed")
+            failures.append(name)
+            return False
         if result is not None:
             print(f"[pipeline] {name}: {result}")
+        return True
     except Exception as e:
         print(f"[pipeline] stage {name} failed: {e}")
         failures.append(name)
+        return False
 
 
 if __name__ == "__main__":
