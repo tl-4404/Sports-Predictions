@@ -2,7 +2,7 @@
 
 THE BAT X is useful while SportsAid's own model is still accumulating a clean,
 priced and graded sample, but it must not become a permanent crutch. This module
-makes that dependency explicit and removable.
+makes that dependency explicit, configurable and removable.
 
 Environment variable
 --------------------
@@ -29,6 +29,15 @@ BATX_MODE_ENV = "SPORTSAID_BATX_MODE"
 VALID_BATX_MODES = {"bootstrap_gate", "advisory", "off"}
 DEFAULT_BATX_MODE = "bootstrap_gate"
 
+_PREDICT_GATE_TEXT = (
+    "8. Identify THE BAT X/model disagreement. Differences above 0.75 Ks or 1.5 outs are\n"
+    "   pass/review signals unless a verified input explains the gap."
+)
+_JUDGE_GATE_TEXT = (
+    "- treat THE BAT X disagreement above 0.75 Ks, 1.5 outs or 3.5 fantasy points as a\n"
+    "  pass/review signal unless a verified current input explains it;"
+)
+
 
 def batx_mode() -> str:
     """Return the validated external-model mode."""
@@ -46,36 +55,41 @@ def apply(policy) -> str:
 
     The v4 policy is authored in bootstrap-gate mode. Advisory and off modes remove
     its ability to act as a standalone veto while preserving the rest of the audit.
-    The function is idempotent for a given process.
+    Original prompts are retained so repeated calls or test-time mode changes are
+    deterministic rather than cumulative.
     """
     mode = batx_mode()
-    previous = getattr(policy, "BATX_MODE", None)
-    if previous == mode:
-        return mode
+
+    if not hasattr(policy, "_BATX_BASE_PREDICT_SYSTEM"):
+        policy._BATX_BASE_PREDICT_SYSTEM = policy.base.PREDICT_SYSTEM
+        policy._BATX_BASE_JUDGE_SYSTEM = policy.base.JUDGE_SYSTEM
+
+    predict_system = policy._BATX_BASE_PREDICT_SYSTEM
+    judge_system = policy._BATX_BASE_JUDGE_SYSTEM
 
     if mode == "advisory":
-        policy.base.PREDICT_SYSTEM = policy.base.PREDICT_SYSTEM.replace(
-            "pass/review signals unless a verified input explains the gap",
-            "diagnostic signals that should reduce confidence but cannot independently veto a play",
+        predict_system = predict_system.replace(
+            _PREDICT_GATE_TEXT,
+            "8. Identify THE BAT X/model disagreement as a diagnostic signal. It may reduce\n"
+            "   confidence but cannot independently veto or reverse a play.",
         )
-        policy.base.JUDGE_SYSTEM = policy.base.JUDGE_SYSTEM.replace(
-            "as a\n  pass/review signal unless a verified current input explains it",
-            "as an external diagnostic. It may reduce confidence but cannot independently veto a play",
+        judge_system = judge_system.replace(
+            _JUDGE_GATE_TEXT,
+            "- treat THE BAT X disagreement as an external diagnostic that may reduce\n"
+            "  confidence but cannot independently veto or reverse a play;",
         )
         role_note = (
             "THE BAT X MODE — advisory: external projections are a benchmark only; "
             "the standalone model, verified news and market evidence control the decision."
         )
     elif mode == "off":
-        policy.base.PREDICT_SYSTEM = policy.base.PREDICT_SYSTEM.replace(
-            "8. Identify THE BAT X/model disagreement. Differences above 0.75 Ks or 1.5 outs are\n"
-            "   pass/review signals unless a verified input explains the gap.\n",
-            "8. Do not use external projection systems in this ablation run.\n",
+        predict_system = predict_system.replace(
+            _PREDICT_GATE_TEXT,
+            "8. Do not use external projection systems in this ablation run.",
         )
-        policy.base.JUDGE_SYSTEM = policy.base.JUDGE_SYSTEM.replace(
-            "- treat THE BAT X disagreement above 0.75 Ks, 1.5 outs or 3.5 fantasy points as a\n"
-            "  pass/review signal unless a verified current input explains it;\n",
-            "- ignore THE BAT X and other external projection systems for this ablation run;\n",
+        judge_system = judge_system.replace(
+            _JUDGE_GATE_TEXT,
+            "- ignore THE BAT X and other external projection systems for this ablation run;",
         )
         role_note = (
             "THE BAT X MODE — off: external projections are excluded for standalone-model "
@@ -87,7 +101,7 @@ def apply(policy) -> str:
             "automatic reversal. THE BAT X never supplies the base forecast or chosen side."
         )
 
-    policy.base.PREDICT_SYSTEM += "\n\n" + role_note
-    policy.base.JUDGE_SYSTEM += "\n\n" + role_note
+    policy.base.PREDICT_SYSTEM = predict_system + "\n\n" + role_note
+    policy.base.JUDGE_SYSTEM = judge_system + "\n\n" + role_note
     policy.BATX_MODE = mode
     return mode
