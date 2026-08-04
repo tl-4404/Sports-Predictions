@@ -13,6 +13,12 @@ from datetime import date
 import data_today
 import db
 import llm_saved_pipeline as policy
+import policy_flags
+
+# Default is bootstrap_gate while the standalone model accumulates a larger clean
+# sample. Set SPORTSAID_BATX_MODE=advisory as calibration matures, or =off for
+# external-model ablation testing.
+BATX_MODE = policy_flags.apply(policy)
 
 
 def refresh_facts(game_date=None) -> int:
@@ -43,6 +49,7 @@ def refresh_facts(game_date=None) -> int:
 
 def run_all(game_date=None):
     """Fresh chat-standard research -> independent prediction -> bounded judge."""
+    print(f"[llm.chat] external model mode: BAT X={BATX_MODE}")
     refresh_facts(game_date)
     policy.base.llm_predict_stage(game_date)
     return policy.base.judge_stage(game_date)
