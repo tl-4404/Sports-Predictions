@@ -2,6 +2,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 MLB = ROOT / "mlb"
 if str(MLB) not in sys.path:
@@ -96,6 +98,37 @@ def test_no_primary_when_edges_do_not_clear_v4_hurdles():
     ]
 
     assert policy._select_primary_key(records) is None
+
+
+def test_batx_mode_defaults_to_bootstrap_gate(monkeypatch):
+    import policy_flags
+
+    monkeypatch.delenv(policy_flags.BATX_MODE_ENV, raising=False)
+    assert policy_flags.batx_mode() == "bootstrap_gate"
+
+
+def test_batx_mode_supports_advisory_and_off(monkeypatch):
+    import policy_flags
+
+    monkeypatch.setenv(policy_flags.BATX_MODE_ENV, "advisory")
+    assert policy_flags.batx_mode() == "advisory"
+    monkeypatch.setenv(policy_flags.BATX_MODE_ENV, "off")
+    assert policy_flags.batx_mode() == "off"
+
+
+def test_batx_mode_rejects_unknown_value(monkeypatch):
+    import policy_flags
+
+    monkeypatch.setenv(policy_flags.BATX_MODE_ENV, "primary_model")
+    with pytest.raises(ValueError):
+        policy_flags.batx_mode()
+
+
+def test_chat_runner_applies_external_model_policy():
+    import llm_chat_runner as runner
+
+    assert runner.BATX_MODE in {"bootstrap_gate", "advisory", "off"}
+    assert runner.policy.BATX_MODE == runner.BATX_MODE
 
 
 def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
