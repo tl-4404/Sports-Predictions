@@ -1,9 +1,10 @@
 """Chat-aligned policy layer for the independent MLB LLM pipeline.
 
-Version 4 applies the August 2026 two-week audit without rewriting the numerical
-simulator. It tightens the decision layer, keeps the simulator and LLM independent,
-and makes the final judge conservative about workload, recent box-score noise,
-model disagreement, correlated markets, and published confidence.
+Version 4.1 converts the most important August 2026 audit safeguards from prompt-only
+guidance into deterministic selection gates. It keeps the numerical simulator and
+LLM independent while making the final judge more conservative about marginal
+strikeout edges, workload unders, lane disagreement, lineup narratives, correlated
+markets, and published confidence.
 """
 from __future__ import annotations
 
@@ -11,14 +12,24 @@ import json
 
 import llm as base
 
-PIPELINE_VERSION = "chat-preserved-v4.0"
+PIPELINE_VERSION = "chat-preserved-v4.1"
 MAX_SIDE_PROBABILITY = 0.64
 BASE_MIN_EDGE = 0.06
-OUTS_UNDER_MIN_EDGE = 0.08
+K_MIN_EDGE = 0.08
+OUTS_UNDER_MIN_EDGE = 0.10
 FANTASY_MIN_EDGE = 0.10
+BASE_MIN_SIDE_PROBABILITY = 0.57
+K_MIN_SIDE_PROBABILITY = 0.60
+OUTS_UNDER_MIN_SIDE_PROBABILITY = 0.60
+MAX_LANE_P_OVER_GAP = 0.12
+LANE_OPPOSITION_TOLERANCE = 0.01
+ROUTINE_LINEUP_MAX_MOVE = 0.015
 
 base.MAX_SEARCHES_PER_GAME = 10
 base.MIN_EDGE = BASE_MIN_EDGE
+# Reduce narrative authority after lineup-driven promotions underperformed.
+base.W_SIM = 0.75
+base.JUDGE_BAND = 0.03
 
 base.FACTS_SYSTEM = """
 You are the research lane for an MLB pitcher-prop betting pipeline. Mirror the
@@ -102,12 +113,15 @@ For every strikeout and pitching-outs line:
    CSW/whiff, role, health or a documented pitch-count change.
 6. Audit manager leash, bullpen rest, days rest, injury context and completed ramps.
 7. Quantify lineup impact. A routine confirmed-lineup change should move probability
-   no more than two points unless K%, OBP, platoon count or a star absence changes
-   materially.
+   no more than one and a half points unless K%, OBP, platoon count or a star absence
+   changes materially.
 8. Identify THE BAT X/model disagreement. Differences above 0.75 Ks or 1.5 outs are
    pass/review signals unless a verified input explains the gap.
-9. Explain why the book may have posted the line and the strongest counterargument.
-10. Keep probabilities conservative. Most props belong near 50%; ordinary published
+9. A strikeout projection from a reputable external model within 0.25 Ks of the
+   posted line is a pass/review signal, not a reason to promote a lineup narrative,
+   unless a verified current role or pitch-mix input explains the difference.
+10. Explain why the book may have posted the line and the strongest counterargument.
+11. Keep probabilities conservative. Most props belong near 50%; ordinary published
     side probabilities are capped near 64% until the historical sample is larger.
 
 Do not force a side when conflicting evidence removes the edge. The rationale MUST
@@ -148,14 +162,21 @@ You are the final bounded judge for two parallel MLB prop pipelines:
 You also see the de-vigged market, which is a strong prior.
 
 Apply these hard decision rules:
-- normal strikeout plays require at least a six-point edge;
-- outs UNDERS require at least an eight-point edge because early-hook assumptions have
-  been overconfident; fantasy-score plays require ten points when supported;
+- strikeout plays require at least an eight-point edge and a 60% final side
+  probability while the clean calibration sample remains small;
+- outs UNDERS require at least a ten-point edge and a 60% final side probability
+  because early-hook assumptions have been overconfident;
+- ordinary non-K, non-outs-under plays require at least a six-point edge and a 57%
+  final side probability; fantasy-score plays require ten points when supported;
 - veto a K under that fails the +4-batters-faced stress test;
 - veto workload unders that win only in the short-workload state;
+- veto a play when the simulator and independent LLM materially support opposite
+  sides, or when their P(over) estimates differ by more than 12 percentage points;
 - treat THE BAT X disagreement above 0.75 Ks, 1.5 outs or 3.5 fantasy points as a
   pass/review signal unless a verified current input explains it;
-- routine lineup confirmation should not swing probability by more than two points;
+- treat an external strikeout projection within 0.25 Ks of the line as a pass/review
+  signal unless a verified current input explains the difference;
+- routine lineup confirmation should not swing probability by more than 1.5 points;
 - recent box scores cannot override stable skill without an underlying change;
 - select at most ONE primary bet per pitcher across all markets; other favorable
   markets are correlated alternatives, not independent official plays;
@@ -177,7 +198,7 @@ For each prop, the application provides simulator P(over), independent LLM P(ove
 with confidence, de-vigged market P(over), and a {w_sim:.0%}/{w_llm:.0%} blend:
 {props_block}
 
-Apply the full audit. For every prop:
+Apply the full audit. For every prop, explicitly compare the two independent lanes:
 1. Explain why the market line may be intentionally correct.
 2. Name the strongest supporting evidence and strongest counterargument.
 3. Check short/normal/extended workload states.
@@ -206,24 +227,86 @@ def _side_and_edge(p_over: float, market_p_over: float):
     return ("over", over_edge) if over_edge >= under_edge else ("under", under_edge)
 
 
+def _side_probability(p_over: float, side: str) -> float:
+    return float(p_over) if side == "over" else 1.0 - float(p_over)
+
+
 def _required_edge(market: str, side: str) -> float:
     if market == "pitcher_fantasy_score":
         return FANTASY_MIN_EDGE
+    if market == "pitcher_strikeouts":
+        return K_MIN_EDGE
     if market == "pitcher_outs" and side == "under":
         return OUTS_UNDER_MIN_EDGE
     return BASE_MIN_EDGE
+
+
+def _required_side_probability(market: str, side: str) -> float:
+    if market == "pitcher_strikeouts":
+        return K_MIN_SIDE_PROBABILITY
+    if market == "pitcher_outs" and side == "under":
+        return OUTS_UNDER_MIN_SIDE_PROBABILITY
+    return BASE_MIN_SIDE_PROBABILITY
+
+
+def _lane_p_over(record, lane: str):
+    row = record.get(lane)
+    if row is None:
+        return None
+    try:
+        return float(row["p_over"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _eligibility(record):
+    """Deterministic official-card gate applied after the bounded judge."""
+    if record.get("action") != "bet":
+        return False, "judge_veto"
+    if record.get("market_p") is None:
+        return False, "unpriced_or_unverified_line"
+
+    market, _line = record["key"]
+    side, edge = _side_and_edge(record["p_over"], record["market_p"])
+    if edge + 1e-12 < _required_edge(market, side):
+        return False, "edge_below_v4_1_threshold"
+
+    side_probability = _side_probability(record["p_over"], side)
+    if side_probability + 1e-12 < _required_side_probability(market, side):
+        return False, "side_probability_below_v4_1_floor"
+
+    sim_p = _lane_p_over(record, "sim")
+    llm_p = _lane_p_over(record, "llm")
+    if sim_p is not None and llm_p is not None:
+        if abs(sim_p - llm_p) > MAX_LANE_P_OVER_GAP:
+            return False, "lane_probability_gap"
+
+        market_p = float(record["market_p"])
+        if side == "over":
+            opposed = (
+                sim_p < market_p - LANE_OPPOSITION_TOLERANCE
+                or llm_p < market_p - LANE_OPPOSITION_TOLERANCE
+            )
+        else:
+            opposed = (
+                sim_p > market_p + LANE_OPPOSITION_TOLERANCE
+                or llm_p > market_p + LANE_OPPOSITION_TOLERANCE
+            )
+        if opposed:
+            return False, "lane_side_disagreement"
+
+    return True, None
 
 
 def _select_primary_key(records):
     """Choose at most one eligible primary market for a pitcher."""
     eligible = []
     for record in records:
-        if record.get("action") != "bet" or record.get("market_p") is None:
+        is_eligible, _reason = _eligibility(record)
+        if not is_eligible:
             continue
-        side, edge = _side_and_edge(record["p_over"], record["market_p"])
-        required = _required_edge(record["key"][0], side)
-        if edge + 1e-12 >= required:
-            eligible.append((edge, record["key"]))
+        _side, edge = _side_and_edge(record["p_over"], record["market_p"])
+        eligible.append((edge, record["key"]))
     if not eligible:
         return None
     eligible.sort(key=lambda item: (-item[0], item[1][0], item[1][1]))
@@ -245,6 +328,17 @@ def _priced_row_v4(*args, **kwargs):
     metadata["policy_version"] = PIPELINE_VERSION
     metadata["probability_cap"] = MAX_SIDE_PROBABILITY
     metadata["base_min_edge"] = BASE_MIN_EDGE
+    metadata["selection_policy"] = {
+        "k_min_edge": K_MIN_EDGE,
+        "outs_under_min_edge": OUTS_UNDER_MIN_EDGE,
+        "k_min_side_probability": K_MIN_SIDE_PROBABILITY,
+        "outs_under_min_side_probability": OUTS_UNDER_MIN_SIDE_PROBABILITY,
+        "base_min_side_probability": BASE_MIN_SIDE_PROBABILITY,
+        "max_lane_p_over_gap": MAX_LANE_P_OVER_GAP,
+        "lane_opposition_tolerance": LANE_OPPOSITION_TOLERANCE,
+        "sim_weight": base.W_SIM,
+        "judge_band": base.JUDGE_BAND,
+    }
     kwargs["rationale"] = json.dumps(metadata)
     return _original_priced_row(*args, **kwargs)
 
@@ -315,15 +409,14 @@ def _judge_pitcher_v4(conn, client, run_id, game_date, pitcher_name, candidates,
     for record in prepared:
         key = record["key"]
         sim = record["sim"]
+        eligible, gate_reason = _eligibility(record)
         books = lines_by_player.get((base._norm(pitcher_name), key[0], key[1]), [])
-        selected = key == primary_key and record["action"] == "bet"
-        suppression_reason = None
-        if record["action"] == "pass":
-            suppression_reason = "judge_veto"
-        elif primary_key is None:
-            suppression_reason = "edge_below_v4_threshold"
-        elif key != primary_key:
-            suppression_reason = "secondary_correlated_market"
+        selected = eligible and key == primary_key
+        suppression_reason = (
+            None
+            if selected
+            else gate_reason or "secondary_correlated_market"
+        )
 
         row = base._priced_row(
             game_date,
@@ -342,6 +435,10 @@ def _judge_pitcher_v4(conn, client, run_id, game_date, pitcher_name, candidates,
                 "blend": round(record["blend"], 4),
                 "primary_market": selected,
                 "suppression_reason": suppression_reason,
+                "sim_p_over": round(float(record["sim"]["p_over"]), 4),
+                "llm_p_over": round(float(record["llm"]["p_over"]), 4),
+                "final_side_probability": round(
+                    max(record["p_over"], 1.0 - record["p_over"]), 4),
             }),
             suppress_bet=not selected,
         )

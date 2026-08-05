@@ -170,14 +170,31 @@ A recommended simulation order is:
 
 ### Current edge requirements
 
-| Market | Minimum edge |
-|---|---:|
-| Standard strikeout or normal market | 6 percentage points |
-| Pitching-outs under | 8 percentage points |
-| Pitcher fantasy score | 10 percentage points |
+| Market | Minimum edge | Minimum final side probability |
+|---|---:|---:|
+| Pitcher strikeouts | 8 percentage points | 60% |
+| Pitching-outs under | 10 percentage points | 60% |
+| Ordinary non-K market | 6 percentage points | 57% |
+| Pitcher fantasy score | 10 percentage points | 57% |
 
 These are temporary conservative requirements while the clean historical sample is
 still growing.
+
+### Deterministic lane-consistency gates
+
+The v4.1 decision layer does not rely on the judge prompt alone. A candidate is
+suppressed from the official card when:
+
+- the numerical simulator and independent LLM materially support opposite sides;
+- their P(over) estimates differ by more than 12 percentage points;
+- the final side probability is below the market-specific floor;
+- the edge is below the market-specific threshold;
+- the line is unpriced, stale or otherwise unverified.
+
+The blend is 75% simulator and 25% independent LLM. The bounded judge may move the
+blend by at most three percentage points. This limits narrative-driven promotions
+after lineup confirmation while preserving the LLM's ability to veto a stale role or
+workload assumption.
 
 ### Probability cap
 
@@ -194,7 +211,7 @@ from appearing as several independent model wins or losses.
 ### Lineup updates
 
 Confirmed lineups are required, but routine changes should not cause large subjective
-swings. A movement larger than roughly two percentage points requires a measurable
+swings. A movement larger than roughly 1.5 percentage points requires a measurable
 change such as:
 
 - material lineup K-rate change;
@@ -234,6 +251,10 @@ why SportsAid should differ.
 
 This is a guardrail, not an averaging rule. THE BAT X still cannot create the base
 forecast or reverse a side automatically.
+
+For strikeouts, an accessible reputable external projection within 0.25 Ks of the
+posted line is treated as a review/pass signal unless a verified current role,
+workload or pitch-mix input explains why SportsAid should differ.
 
 #### `advisory`
 

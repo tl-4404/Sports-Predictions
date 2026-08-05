@@ -100,14 +100,23 @@ The long-term target is:
 
 ## Current decision safeguards
 
-The v4 policy includes:
+The v4.1 policy includes:
 
 - Exact current line and platform verification.
 - Confirmed opposing lineup and pitcher role before a play is finalized.
-- Minimum six-percentage-point edge for normal markets.
-- Higher hurdles for workload-based outs unders and fantasy-score markets.
+- A 75% simulator / 25% independent-LLM blend, with final judge movement limited to
+  three percentage points.
+- Minimum eight-percentage-point edge and 60% side probability for strikeouts.
+- Minimum ten-percentage-point edge and 60% side probability for pitching-outs unders.
+- Deterministic suppression when the simulator and LLM support opposite sides or
+  differ by more than 12 percentage points.
+- Six-point/57% floors for ordinary markets and a ten-point hurdle for fantasy score.
 - Short, normal and extended workload scenarios.
 - A `+4 batters faced` stress test for strikeout unders.
+- Near-line external strikeout projections are review/pass signals, not reasons to
+  promote a lineup narrative.
+- Routine lineup confirmation is limited to roughly a 1.5-point probability move
+  unless the measurable matchup changes materially.
 - Conservative probability caps while the calibration sample is small.
 - One primary official prop per pitcher to avoid counting correlated markets as
   independent opportunities.

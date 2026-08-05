@@ -13,12 +13,13 @@ if str(MLB) not in sys.path:
 def test_saved_policy_installs_recalibrated_audit():
     import llm_saved_pipeline as policy
 
-    assert policy.PIPELINE_VERSION == "chat-preserved-v4.0"
+    assert policy.PIPELINE_VERSION == "chat-preserved-v4.1"
     prompt = policy.base.PREDICT_SYSTEM
     assert "WORKLOAD-STATES" in prompt
     assert "PLUS-4-BF" in prompt
     assert "MODEL-DISAGREEMENT" in prompt
     assert "FOUR additional batters faced" in prompt
+    assert "within 0.25 Ks" in prompt
     assert "do NOT see prices" in prompt
 
 
@@ -28,8 +29,8 @@ def test_judge_remains_bounded_market_aware_and_conservative():
     prompt = policy.base.JUDGE_SYSTEM
     assert "de-vigged market" in prompt
     assert "ONE primary bet per pitcher" in prompt
-    assert policy.base.JUDGE_BAND == 0.05
-    assert policy.base.W_SIM == 0.70
+    assert policy.base.JUDGE_BAND == 0.03
+    assert policy.base.W_SIM == 0.75
     assert policy.base.MIN_EDGE == 0.06
     assert policy.base._judge_pitcher is policy._judge_pitcher_v4
 
@@ -45,11 +46,85 @@ def test_probability_cap_applies_to_either_side():
 def test_dynamic_edge_thresholds_are_market_specific():
     import llm_saved_pipeline as policy
 
-    assert policy._required_edge("pitcher_strikeouts", "under") == 0.06
-    assert policy._required_edge("pitcher_strikeouts", "over") == 0.06
-    assert policy._required_edge("pitcher_outs", "under") == 0.08
+    assert policy._required_edge("pitcher_strikeouts", "under") == 0.08
+    assert policy._required_edge("pitcher_strikeouts", "over") == 0.08
+    assert policy._required_edge("pitcher_outs", "under") == 0.10
     assert policy._required_edge("pitcher_outs", "over") == 0.06
     assert policy._required_edge("pitcher_fantasy_score", "under") == 0.10
+
+
+def _record(market, p_over, market_p, sim_p=None, llm_p=None):
+    record = {
+        "key": (market, 5.5),
+        "action": "bet",
+        "p_over": p_over,
+        "market_p": market_p,
+    }
+    if sim_p is not None:
+        record["sim"] = {"p_over": sim_p}
+    if llm_p is not None:
+        record["llm"] = {"p_over": llm_p}
+    return record
+
+
+def test_strikeout_play_requires_sixty_percent_side_probability():
+    import llm_saved_pipeline as policy
+
+    eligible, reason = policy._eligibility(
+        _record("pitcher_strikeouts", 0.41, 0.52, 0.40, 0.42)
+    )
+    assert not eligible
+    assert reason == "side_probability_below_v4_1_floor"
+
+
+def test_outs_under_requires_sixty_percent_side_probability():
+    import llm_saved_pipeline as policy
+
+    eligible, reason = policy._eligibility(
+        _record("pitcher_outs", 0.41, 0.52, 0.40, 0.42)
+    )
+    assert not eligible
+    assert reason == "side_probability_below_v4_1_floor"
+
+
+def test_lane_side_disagreement_suppresses_official_play():
+    import llm_saved_pipeline as policy
+
+    eligible, reason = policy._eligibility(
+        _record("pitcher_strikeouts", 0.39, 0.50, 0.44, 0.515)
+    )
+    assert not eligible
+    assert reason == "lane_side_disagreement"
+
+
+def test_large_lane_probability_gap_suppresses_official_play():
+    import llm_saved_pipeline as policy
+
+    eligible, reason = policy._eligibility(
+        _record("pitcher_outs", 0.39, 0.50, 0.32, 0.47)
+    )
+    assert not eligible
+    assert reason == "lane_probability_gap"
+
+
+def test_strong_aligned_k_under_remains_eligible():
+    import llm_saved_pipeline as policy
+
+    eligible, reason = policy._eligibility(
+        _record("pitcher_strikeouts", 0.39, 0.50, 0.38, 0.40)
+    )
+    assert eligible
+    assert reason is None
+
+
+def test_aligned_outs_over_uses_normal_market_floor():
+    import llm_saved_pipeline as policy
+
+    record = _record("pitcher_outs", 0.58, 0.50, 0.57, 0.59)
+    record["key"] = ("pitcher_outs", 15.5)
+    eligible, reason = policy._eligibility(record)
+    assert eligible
+    assert reason is None
 
 
 def test_only_strongest_eligible_market_becomes_primary():
