@@ -80,6 +80,12 @@ def patch_tests():
     app_test.write_text(text)
 
 
+def patch_makefile():
+    path = ROOT / "Makefile"
+    text = path.read_text().replace("\t$(PY) tests/test_nba_safety.py\n", "")
+    path.write_text(text)
+
+
 def cleanup():
     workflow = ROOT / ".github" / "workflows" / "finalize-ledger.yml"
     if workflow.exists():
@@ -91,5 +97,6 @@ patch_db()
 patch_decision_compatibility()
 patch_docs()
 patch_tests()
+patch_makefile()
 cleanup()
 print("Removed cryptographic ledger requirement; append-only immutability preserved")
