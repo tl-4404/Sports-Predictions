@@ -1,21 +1,17 @@
-"""Grade yesterday's prop predictions against box scores.
+"""Grade immutable MLB prop decisions and compute true probability CLV.
 
-For every ungraded prediction on a date:
-  * pull the starter's actual Ks / outs from the MLB StatsAPI box score
-  * settle over/under/push (void if the pitcher didn't start)
-  * compute profit at the logged Kelly stake
-  * compute CLV: closing de-vigged probability minus entry de-vigged
-    probability on the selected (or paper-tracked) side, using only the last
-    snapshot before first pitch
-
-Run: python mlb/grade.py [YYYY-MM-DD]   (defaults to yesterday)
+Pushes, voids, and refunds use one canonical settlement state so they cannot be
+counted both as losses and as returned stakes. Every forecast is graded for model
+evaluation; ROI includes only official, integrity-passing rows.
 """
+from __future__ import annotations
+
 import sys
 from datetime import date, timedelta
 
-import db
 import data_today
-from betting_math import american_to_decimal, devig_two_way, consensus_p_over
+import db
+from betting_math import american_to_decimal, consensus_p_over
 from timeutils import slate_today
 
 
@@ -27,156 +23,143 @@ def grade_date(game_date=None):
     game_date = game_date or (
         date.fromisoformat(slate_today()) - timedelta(days=1)
     ).isoformat()
-    conn = db.connect()
-    db.ensure_schema(conn)
-    preds = db.ungraded_predictions(conn, game_date)
-    if not preds:
+    conn = db.connect(); db.ensure_schema(conn)
+    predictions = db.ungraded_predictions(conn, game_date)
+    if not predictions:
         print(f"[grade] nothing ungraded for {game_date}")
-        conn.close()
-        return 0
+        conn.close(); return 0
 
     games = data_today.get_schedule(game_date)
     game_meta = {g["game_pk"]: g for g in games}
-    actuals_by_game = {}
-    failed_games = set()
-    for g in games:
+    actuals_by_game, failed_games = {}, set()
+    for game in games:
         try:
-            actuals_by_game[g["game_pk"]] = (
-                data_today.get_starter_actuals(g["game_pk"]) or {}
-            )
-        except Exception as e:  # game postponed, boxscore missing, etc.
-            print(f"[grade] boxscore {g['game_pk']} failed: {e}")
-            failed_games.add(g["game_pk"])
+            actuals_by_game[game["game_pk"]] = data_today.get_starter_actuals(game["game_pk"]) or {}
+        except Exception as exc:
+            print(f"[grade] boxscore {game['game_pk']} failed: {exc}")
+            failed_games.add(game["game_pk"])
 
     graded = 0
-    for p in preds:
-        if p["game_pk"] in failed_games or p["game_pk"] not in actuals_by_game:
+    for pred in predictions:
+        if pred["game_pk"] in failed_games or pred["game_pk"] not in actuals_by_game:
             continue
-        game_actuals = actuals_by_game[p["game_pk"]]
-        res = game_actuals.get(p["player_id"])
-        if res is None:
-            res = next(
-                (
-                    row
-                    for row in game_actuals.values()
-                    if _norm(row.get("name")) == _norm(p["player_name"])
-                ),
-                None,
-            )
-        stat = "ks" if p["market"] == "pitcher_strikeouts" else "outs"
-        actual = res[stat] if res else None
+        actuals = actuals_by_game[pred["game_pk"]]
+        result = actuals.get(pred["player_id"])
+        if result is None:
+            result = next((row for row in actuals.values()
+                           if _norm(row.get("name")) == _norm(pred["player_name"])), None)
+        stat = "ks" if pred["market"] == "pitcher_strikeouts" else "outs"
+        actual = result.get(stat) if result else None
 
         if actual is None:
-            outcome, bet_won, profit = "void", None, 0.0
-        elif actual > p["line"]:
+            outcome = "void"
+        elif actual > pred["line"]:
             outcome = "over"
-        elif actual < p["line"]:
+        elif actual < pred["line"]:
             outcome = "under"
         else:
             outcome = "push"
 
-        if actual is not None:
-            bet_won, profit = _settle(p, outcome)
+        paper_side = _paper_side(pred)
+        settlement, refund_reason, won, profit, roi_eligible = _settle(pred, outcome, paper_side)
 
-        start_time = (game_meta.get(p["game_pk"]) or {}).get("start_time")
-        close_rows = (
-            db.closing_lines(
-                conn,
-                game_date,
-                p["player_name"],
-                p["market"],
-                p["line"],
-                start_time,
+        start_time = (game_meta.get(pred["game_pk"]) or {}).get("start_time") or pred["event_start"]
+        close_rows = []
+        if start_time:
+            close_rows = db.closing_lines(
+                conn, game_date, pred["player_name"], pred["market"],
+                pred["line"], start_time,
             )
-            if start_time
-            else []
-        )
-        close_p = consensus_p_over(
+        close_p_over = consensus_p_over(
             [(row["over_odds"], row["under_odds"]) for row in close_rows]
         )
-        clv = None
-        if close_p is not None and p["market_p_over"] is not None:
-            raw_p = (
-                p["raw_p_over"]
-                if "raw_p_over" in p.keys() and p["raw_p_over"] is not None
-                else p["p_over"]
-            )
-            paper_side = (
-                p["bet_side"]
-                if p["bet_side"] in ("over", "under")
-                else "over" if raw_p >= p["market_p_over"] else "under"
-            )
-            entry_side = (
-                p["market_p_over"]
-                if paper_side == "over"
-                else 1.0 - p["market_p_over"]
-            )
-            close_side = close_p if paper_side == "over" else 1.0 - close_p
-            # Positive means the market moved toward the side at a worse price.
-            clv = close_side - entry_side
+        entry_side = None
+        if pred["market_p_over"] is not None and paper_side:
+            entry_side = float(pred["market_p_over"])
+            if paper_side == "under":
+                entry_side = 1.0 - entry_side
+        close_side = None
+        if close_p_over is not None and paper_side:
+            close_side = close_p_over if paper_side == "over" else 1.0 - close_p_over
+        clv = close_side - entry_side if close_side is not None and entry_side is not None else None
+        clv_available = int(clv is not None)
 
         conn.execute(
             """INSERT INTO prop_results
-               (prediction_id, graded_at, actual, outcome, bet_won,
-                profit_units, closing_p_over, clv)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (p["id"], db.utcnow(), actual, outcome, bet_won, profit,
-             close_p, clv),
+               (prediction_id,graded_at,actual,outcome,settlement_status,refund_reason,
+                bet_won,profit_units,closing_p_over,entry_p_side,closing_p_side,clv,
+                clv_available,roi_eligible)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pred["id"], db.utcnow(), actual, outcome, settlement, refund_reason,
+             won, profit, close_p_over, entry_side, close_side, clv,
+             clv_available, roi_eligible),
         )
         graded += 1
     conn.commit()
-
     _print_summary(conn, game_date)
     conn.close()
     return graded
 
 
-def _settle(pred, outcome):
-    """Returns (bet_won, profit_units) at the logged kelly stake."""
-    side = pred["bet_side"]
-    stake = pred["kelly_frac"] or 0.0
-    if side not in ("over", "under") or stake <= 0:
-        return None, 0.0
+def _paper_side(pred):
+    if pred["bet_side"] in {"over", "under"}:
+        return pred["bet_side"]
+    if pred["candidate_side"] in {"over", "under"}:
+        return pred["candidate_side"]
+    if pred["market_p_over"] is None:
+        return None
+    raw = pred["raw_p_over"] if pred["raw_p_over"] is not None else pred["p_over"]
+    return "over" if float(raw) >= float(pred["market_p_over"]) else "under"
+
+
+def _settle(pred, outcome, paper_side):
+    official = bool(pred["official"]) and pred["decision_status"] == "official"
+    stake = float(pred["kelly_frac"] or 0.0)
+    if outcome == "void":
+        return "refund", "pitcher_did_not_start_or_no_official_stat", None, 0.0, 0
     if outcome == "push":
-        return None, 0.0
-    won = 1 if outcome == side else 0
-    odds = pred["over_odds"] if side == "over" else pred["under_odds"]
+        return "refund", "whole_number_push", None, 0.0, 0
+    if not official or pred["bet_side"] not in {"over", "under"} or stake <= 0:
+        return "graded", None, None, 0.0, 0
+
+    won = 1 if outcome == pred["bet_side"] else 0
+    odds = pred["over_odds"] if pred["bet_side"] == "over" else pred["under_odds"]
     if odds is None:
-        return won, 0.0
-    dec = american_to_decimal(odds)
-    return won, stake * (dec - 1.0) if won else -stake
+        return "graded", "official_row_missing_price", won, 0.0, 0
+    decimal = american_to_decimal(odds)
+    profit = stake * (decimal - 1.0) if won else -stake
+    return ("win" if won else "loss"), None, won, profit, 1
 
 
 def _print_summary(conn, game_date):
     rows = conn.execute(
-        """WITH ranked AS (
+        """WITH first_snapshot AS (
              SELECT p.*,
                     ROW_NUMBER() OVER (
-                      PARTITION BY p.game_date, COALESCE(p.game_pk,-1),
-                                   LOWER(p.player_name), p.market, p.line,
-                                   p.source, COALESCE(p.policy_version,'legacy')
-                      ORDER BY p.created_at DESC, p.id DESC
-                    ) AS recency_rank
-             FROM prop_predictions p
-             WHERE p.game_date = ?
+                      PARTITION BY p.game_date,COALESCE(p.game_pk,-1),
+                                   LOWER(p.player_name),p.market,p.source,
+                                   COALESCE(p.policy_version,'legacy')
+                      ORDER BY p.created_at ASC,p.id ASC
+                    ) first_rank
+             FROM prop_predictions p WHERE p.game_date=?
            )
-           SELECT p.source, COALESCE(p.policy_version,'legacy') policy_version,
-                  COUNT(*) n,
-                  SUM(CASE WHEN r.bet_won IS NOT NULL THEN 1 ELSE 0 END) bets,
-                  SUM(COALESCE(r.bet_won,0)) wins,
-                  ROUND(SUM(COALESCE(r.profit_units,0)), 4) pnl,
-                  ROUND(AVG(r.clv), 4) avg_clv
-           FROM ranked p JOIN prop_results r ON r.prediction_id = p.id
-           WHERE p.recency_rank = 1
-           GROUP BY p.source, COALESCE(p.policy_version,'legacy')""",
+           SELECT p.source,p.policy_version,COUNT(*) forecasts,
+                  SUM(CASE WHEN r.roi_eligible=1 THEN 1 ELSE 0 END) official_bets,
+                  SUM(CASE WHEN r.settlement_status='win' THEN 1 ELSE 0 END) wins,
+                  SUM(CASE WHEN r.settlement_status='refund' THEN 1 ELSE 0 END) refunds,
+                  ROUND(SUM(COALESCE(r.profit_units,0)),4) pnl,
+                  ROUND(AVG(CASE WHEN r.clv_available=1 THEN r.clv END),4) avg_clv
+           FROM first_snapshot p JOIN prop_results r ON r.prediction_id=p.id
+           WHERE p.first_rank=1 GROUP BY p.source,p.policy_version""",
         (game_date,),
     ).fetchall()
-    for r in rows:
+    for row in rows:
         print(
-              f"[grade] {game_date} {r['source']}/{r['policy_version']}: "
-              f"{r['n']} preds, "
-              f"{r['bets'] or 0} bets, {r['wins'] or 0} wins, "
-              f"pnl={r['pnl']}, avg CLV={r['avg_clv']}")
+            f"[grade] {game_date} {row['source']}/{row['policy_version']}: "
+            f"{row['forecasts']} forecasts, {row['official_bets'] or 0} official, "
+            f"{row['wins'] or 0} wins, {row['refunds'] or 0} refunds, "
+            f"pnl={row['pnl']}, avg true CLV={row['avg_clv']}"
+        )
 
 
 if __name__ == "__main__":
