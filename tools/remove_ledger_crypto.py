@@ -64,6 +64,21 @@ def patch_tests():
     )
     pipeline.write_text(text)
 
+    app_test = ROOT / "tests" / "test_app_offline.py"
+    text = app_test.read_text()
+    text = text.replace(
+        '"policy_version": "accuracy_v2",',
+        '"policy_version": "sportsaid-v5.0-merged-audit",\n'
+        '            "candidate_side": bet, "decision_status": "official",\n'
+        '            "official": 1, "selected_for_card": 1,',
+    )
+    old_insert = '''            """INSERT INTO prop_results (prediction_id, graded_at, actual,\n               outcome, bet_won, profit_units, closing_p_over, clv)\n               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",\n            (pid, propdb.utcnow(), 8, "over", won, profit, 0.55,\n             0.09 if won else -0.02))'''
+    new_insert = '''            """INSERT INTO prop_results (prediction_id, graded_at, actual,\n               outcome, settlement_status, bet_won, profit_units, closing_p_over,\n               entry_p_side, closing_p_side, clv, clv_available, roi_eligible)\n               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",\n            (pid, propdb.utcnow(), 8, "over", "win" if won else "loss",\n             won, profit, 0.55, 0.50, 0.55, 0.09 if won else -0.02, 1, 1))'''
+    if old_insert not in text:
+        raise SystemExit("app scorecard fixture insert block not found")
+    text = text.replace(old_insert, new_insert)
+    app_test.write_text(text)
+
 
 def cleanup():
     workflow = ROOT / ".github" / "workflows" / "finalize-ledger.yml"
