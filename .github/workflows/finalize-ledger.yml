@@ -22,15 +22,15 @@ jobs:
           python-version: '3.12'
       - name: Apply non-cryptographic ledger migration
         run: python tools/remove_ledger_crypto.py
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+      - name: Install repository test environment
+        run: make install
       - name: Compile pipeline modules
-        run: python -m py_compile mlb/db.py mlb/decision.py mlb/simulator.py mlb/calibration.py mlb/predict.py mlb/grade.py mlb/llm_saved_pipeline.py mlb/llm_chat_runner.py
+        run: .venv/bin/python -m py_compile mlb/db.py mlb/decision.py mlb/simulator.py mlb/calibration.py mlb/predict.py mlb/grade.py mlb/llm_saved_pipeline.py mlb/llm_chat_runner.py
       - name: Run targeted merged-audit tests
         run: |
-          python tests/test_merged_audit_policy.py
-          python tests/test_llm_chat_pipeline.py
-          python tests/test_accuracy_policy.py
+          .venv/bin/python tests/test_merged_audit_policy.py
+          .venv/bin/python tests/test_llm_chat_pipeline.py
+          .venv/bin/python tests/test_accuracy_policy.py
       - name: Run full offline suite
         run: make test
       - name: Commit finalized pipeline
