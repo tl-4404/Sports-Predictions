@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # This script is intentionally one-shot; the workflow deletes it after a green run.
+# Retried after fixing the repository virtualenv dependency setup.
 
 
 def patch_db():
