@@ -40,6 +40,15 @@ check("EV zero exactly at break-even", abs(pp.power_ev(be2, 2)) < 1e-9)
 check("EV positive above break-even", pp.power_ev(0.62, 2) > 0)
 check("EV negative below break-even", pp.power_ev(0.55, 2) < 0)
 check("default play margin is conservative", pp.PLAYABLE_MARGIN >= 0.04)
+first = {"p_pick": 0.55, "p_push": 0.10}
+second = {"p_pick": 0.60, "p_push": 0.05}
+expected = 3.0 * 0.55 * 0.60 + 1.5 * (
+    0.55 * 0.05 + 0.10 * 0.60
+) + 0.10 * 0.05 - 1.0
+check(
+    "two-pick EV includes one-tie and two-tie states",
+    abs(pp.two_pick_ev(first, second, 3.0, 1.5) - expected) < 1e-12,
+)
 
 print("prizepicks complete-board snapshots:")
 snapshot_tmp = tempfile.mkdtemp()
@@ -173,8 +182,13 @@ ace_k = [
 ][0]
 check("ace strikeouts picks MORE", ace_k["pick_side"] == "more",
       f"(p_over={ace_k['p_over']:.3f})")
-check("ace strikeouts clears conservative margin", ace_k["playable"] == 1,
-      f"(edge={ace_k['edge']:+.3f})")
+check(
+    "leg is held without exact sportsbook anchor and validation",
+    ace_k["playable"] == 0
+    and ace_k["candidate"] == 0
+    and "market anchor" in (ace_k["hold_reason"] or ""),
+    f"(edge={ace_k['edge']:+.3f})",
+)
 
 soft_k = [
     pick for pick in picks
@@ -193,9 +207,10 @@ check("p_pick is the chosen side's probability",
 check("edge = p_pick - break-even",
       all(abs(pick["edge"] - (pick["p_pick"] - pick["breakeven"])) < 1e-9
           for pick in picks))
-check("confirmed plays require the configured margin",
-      all(bool(pick["playable"]) == (pick["edge"] >= pp.PLAYABLE_MARGIN)
-          for pick in picks if pick["player_name"] == "Ace Example"))
+check(
+    "per-leg margin never bypasses card-level gate",
+    all(not pick["playable"] for pick in picks),
+)
 
 
 def fake_actuals(game_pk):

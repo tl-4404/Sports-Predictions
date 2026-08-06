@@ -19,7 +19,8 @@ Run: python mlb/prizepicks.py [YYYY-MM-DD]
 """
 import json
 import os
-from datetime import date, datetime, timezone
+from itertools import combinations
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -30,10 +31,14 @@ except ImportError:
 
 import db
 import data_today
+import calibration
+import decision
 import netfetch
 import simulator
+from betting_math import consensus_p_over
 from factors import park_k_factor, ump_k_factor
 from predict import simulate_pitcher, N_SIMS
+from timeutils import slate_date, slate_today
 
 BASE_DIR = Path(__file__).resolve().parent
 STUB_PATHS = (
@@ -58,6 +63,8 @@ TARGET_LEGS = 2
 EVALUATED_ODDS_TYPE = "standard"
 PLAYABLE_MARGIN = float(os.getenv("PRIZEPICKS_PLAYABLE_MARGIN", "0.04"))
 LINE_MAX_AGE_MINUTES = int(os.getenv("PRIZEPICKS_LINE_MAX_AGE_MINUTES", "30"))
+CARD_MIN_EV = float(os.getenv("PRIZEPICKS_CARD_MIN_EV", "0.08"))
+MAX_CARDS = int(os.getenv("PRIZEPICKS_MAX_CARDS", "1"))
 
 
 def power_breakeven(n_legs, payouts=None):
@@ -89,7 +96,7 @@ class PrizePicksFetcher:
         ).strip().upper()
 
     def fetch(self, game_date=None):
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         if not self.state_code:
             raise RuntimeError(
                 "PRIZEPICKS_STATE_CODE is required for a jurisdiction-correct board"
@@ -137,7 +144,7 @@ class StubPrizePicksFetcher:
     """Offline stand-in serving fixture projections from JSON."""
 
     def fetch(self, game_date=None):
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         as_of = datetime.now(timezone.utc).isoformat()
         path = next((p for p in STUB_PATHS if p.exists()), None)
         if path is None:
@@ -186,7 +193,7 @@ def _parse_projections(payload, game_date, as_of):
         if status not in {"pre_game", "scheduled"}:
             continue
         start = attributes.get("start_time") or ""
-        if start and not start.startswith(game_date):
+        if start and slate_date(start) != game_date:
             continue
         relationship = (
             (projection.get("relationships", {}) or {}).get("new_player", {})
@@ -253,14 +260,21 @@ def ensure_schema(conn):
       line          REAL NOT NULL,
       odds_type     TEXT NOT NULL DEFAULT 'standard',
       p_over        REAL NOT NULL,
+      raw_p_over    REAL,
+      decision_p_over REAL,
+      p_push        REAL NOT NULL DEFAULT 0,
+      market_p_over REAL,
       pick_side     TEXT NOT NULL,
       p_pick        REAL NOT NULL,
       breakeven     REAL NOT NULL,
       edge          REAL NOT NULL,
       ev_2          REAL,
       ev_3          REAL,
+      candidate     INTEGER NOT NULL DEFAULT 0,
       playable      INTEGER NOT NULL,
-      mean          REAL
+      mean          REAL,
+      policy_version TEXT NOT NULL DEFAULT 'legacy',
+      hold_reason   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pp_picks_lookup
       ON prizepicks_picks(game_date, market, player_name);
@@ -275,11 +289,53 @@ def ensure_schema(conn):
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_results_pick
       ON prizepicks_results(pick_id);
+
+    CREATE TABLE IF NOT EXISTS prizepicks_cards (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id         TEXT NOT NULL,
+      created_at     TEXT NOT NULL,
+      game_date      TEXT NOT NULL,
+      pick_1_id      INTEGER NOT NULL REFERENCES prizepicks_picks(id),
+      pick_2_id      INTEGER NOT NULL REFERENCES prizepicks_picks(id),
+      multiplier     REAL NOT NULL,
+      tie_multiplier REAL NOT NULL,
+      expected_value REAL NOT NULL,
+      playable       INTEGER NOT NULL,
+      rationale      TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_cards_pair
+      ON prizepicks_cards(run_id, pick_1_id, pick_2_id);
+
+    CREATE TABLE IF NOT EXISTS prizepicks_card_results (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id        INTEGER NOT NULL REFERENCES prizepicks_cards(id),
+      graded_at      TEXT NOT NULL,
+      outcome        TEXT,
+      profit_units   REAL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_card_results_card
+      ON prizepicks_card_results(card_id);
     """)
     _ensure_column(conn, "prizepicks_lines", "odds_type",
                    "TEXT NOT NULL DEFAULT 'standard'")
     _ensure_column(conn, "prizepicks_picks", "odds_type",
                    "TEXT NOT NULL DEFAULT 'standard'")
+    _ensure_column(conn, "prizepicks_picks", "raw_p_over", "REAL")
+    _ensure_column(conn, "prizepicks_picks", "decision_p_over", "REAL")
+    _ensure_column(
+        conn, "prizepicks_picks", "p_push", "REAL NOT NULL DEFAULT 0"
+    )
+    _ensure_column(conn, "prizepicks_picks", "market_p_over", "REAL")
+    _ensure_column(
+        conn, "prizepicks_picks", "candidate", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _ensure_column(
+        conn,
+        "prizepicks_picks",
+        "policy_version",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    )
+    _ensure_column(conn, "prizepicks_picks", "hold_reason", "TEXT")
     conn.commit()
 
 
@@ -325,7 +381,7 @@ def _latest_snapshot_time(conn, game_date):
 
 def _snapshot_is_fresh(conn, game_date):
     """Require a recent live-board snapshot for today's real-money run."""
-    if game_date != date.today().isoformat():
+    if game_date != slate_today():
         return True
     stamp = _latest_snapshot_time(conn, game_date)
     if not stamp:
@@ -361,9 +417,10 @@ def refresh(game_date=None):
 
 def evaluate_date(game_date=None, n_sims=N_SIMS):
     """Score every currently posted standard PrizePicks line."""
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conn = db.connect()
+    db.ensure_schema(conn)
     ensure_schema(conn)
 
     if not _snapshot_is_fresh(conn, game_date):
@@ -382,8 +439,32 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
         conn.close()
         return 0
 
+    sportsbook = {}
+    for row in db.active_lines(conn, game_date):
+        key = (_norm(row["player_name"]), row["market"], float(row["line"]))
+        sportsbook.setdefault(key, []).append(row)
+    judge_approved = {}
+    judge_run = conn.execute(
+        """SELECT MAX(run_id) AS run_id
+           FROM prop_predictions
+           WHERE game_date=? AND source='judge'""",
+        (game_date,),
+    ).fetchone()
+    if judge_run and judge_run["run_id"]:
+        for row in conn.execute(
+            """SELECT player_name, market, line, bet_side
+               FROM prop_predictions
+               WHERE game_date=? AND run_id=? AND source='judge'
+                 AND bet_side IN ('over','under')""",
+            (game_date, judge_run["run_id"]),
+        ):
+            judge_approved[
+                (_norm(row["player_name"]), row["market"], float(row["line"]))
+            ] = row["bet_side"]
+
     n_logged = 0
     for game in data_today.get_schedule(game_date):
+        game_reasons = data_today.game_gate_reasons(game, game_date)
         k_park = park_k_factor(game["home_team"])
         ump_name = data_today.get_home_plate_umpire(game["game_pk"])
         k_ump = ump_k_factor(ump_name)
@@ -400,7 +481,7 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
             try:
                 ks, outs, meta = simulate_pitcher(
                     pitcher, opp_lineup_ids, k_park=k_park, k_ump=k_ump,
-                    n_sims=n_sims)
+                    n_sims=n_sims, game_date=game_date)
             except Exception as exc:
                 print(f"[prizepicks] {pitcher['name']}: sim failed ({exc})")
                 continue
@@ -411,42 +492,232 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
                     continue
                 n_logged += _log_pick(
                     conn, run_id, game_date, game, pitcher, row, arr,
-                    allow_play=bool(meta.get("confirmed")),
+                    anchor_rows=sportsbook.get(
+                        (
+                            _norm(pitcher["name"]),
+                            row["market"],
+                            float(row["line"]),
+                        ),
+                        [],
+                    ),
+                    quality_reasons=game_reasons + meta["quality_reasons"],
+                    judge_side=judge_approved.get(
+                        (
+                            _norm(pitcher["name"]),
+                            row["market"],
+                            float(row["line"]),
+                        )
+                    ),
                 )
-    print(f"[prizepicks] logged {n_logged} standard picks")
+    cards = _build_two_pick_cards(conn, run_id, game_date)
+    print(
+        f"[prizepicks] logged {n_logged} standard picks; "
+        f"{cards} card(s) cleared exact EV"
+    )
     conn.close()
     return n_logged
 
 
 def _log_pick(
-    conn, run_id, game_date, game, pitcher, line_row, arr, allow_play=True
+    conn,
+    run_id,
+    game_date,
+    game,
+    pitcher,
+    line_row,
+    arr,
+    anchor_rows=(),
+    quality_reasons=(),
+    judge_side=None,
 ):
     line = line_row["line"]
-    p_over, p_under, _ = simulator.prob_over(arr, line)
-    if p_over >= 0.5:
-        pick_side, p_pick = "more", p_over
+    raw_p_over, raw_p_under, p_push = simulator.prob_over(arr, line)
+    p_over = calibration.calibrated_probability(
+        conn,
+        raw_p_over,
+        line_row["market"],
+        "sim",
+        as_of_date=game_date,
+        policy_version=decision.POLICY_VERSION,
+    )
+    p_under = 1.0 - p_over
+    market_p = consensus_p_over(
+        [
+            (row["over_odds"], row["under_odds"])
+            for row in anchor_rows
+        ]
+    )
+    priced_books = {
+        row["book"]
+        for row in anchor_rows
+        if row["over_odds"] is not None and row["under_odds"] is not None
+    }
+    validation = calibration.validation_status(
+        conn,
+        line_row["market"],
+        "sim",
+        as_of_date=game_date,
+        policy_version=decision.POLICY_VERSION,
+    )
+    quality_reasons = list(quality_reasons)
+    if judge_side not in {"over", "under"}:
+        quality_reasons.append(
+            "independent LLM safety-judge confirmation missing"
+        )
+    call = decision.decide(
+        p_over,
+        market_p,
+        book_count=len(priced_books),
+        validation=validation,
+        quality_reasons=quality_reasons,
+        required_side=judge_side,
+    )
+
+    if call.bet_side == "over":
+        pick_side = "more"
+    elif call.bet_side == "under":
+        pick_side = "less"
+    elif p_over >= 0.5:
+        pick_side = "more"
     else:
-        pick_side, p_pick = "less", p_under
+        pick_side = "less"
+
+    no_push_mass = max(0.0, 1.0 - p_push)
+    conditional_pick = p_over if pick_side == "more" else p_under
+    p_pick = conditional_pick * no_push_mass
     breakeven = power_breakeven(TARGET_LEGS)
     edge = p_pick - breakeven
-    playable = bool(allow_play and edge >= PLAYABLE_MARGIN)
+    candidate = bool(call.bet_side)
+    hold_reason = "; ".join(call.hold_reasons)
     conn.execute(
         """INSERT INTO prizepicks_picks
            (run_id, created_at, game_date, game_pk, player_name, player_id,
-            market, line, odds_type, p_over, pick_side, p_pick, breakeven, edge,
-            ev_2, ev_3, playable, mean)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            market, line, odds_type, p_over, raw_p_over, decision_p_over,
+            p_push, market_p_over, pick_side, p_pick, breakeven, edge,
+            ev_2, ev_3, candidate, playable, mean, policy_version, hold_reason)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, db.utcnow(), game_date, game["game_pk"], pitcher["name"],
          pitcher.get("id"), line_row["market"], line, line_row["odds_type"],
-         p_over, pick_side, p_pick, breakeven, edge, power_ev(p_pick, 2),
-         power_ev(p_pick, 3), 1 if playable else 0, float(arr.mean())))
+         p_over, raw_p_over, call.decision_p_over, p_push, market_p,
+         pick_side, p_pick, breakeven, edge, None, None,
+         1 if candidate else 0, 0, float(arr.mean()),
+         decision.POLICY_VERSION, hold_reason))
     conn.commit()
     return 1
 
 
+def _configured_card_terms():
+    """Displayed PrizePicks terms must be supplied; payouts can vary by card."""
+    try:
+        multiplier = float(os.getenv("PRIZEPICKS_2_PICK_MULTIPLIER", ""))
+        tie_multiplier = float(
+            os.getenv("PRIZEPICKS_TIE_WIN_MULTIPLIER", "")
+        )
+    except ValueError:
+        return None
+    if multiplier <= 1.0 or tie_multiplier < 1.0:
+        return None
+    return multiplier, tie_multiplier
+
+
+def two_pick_ev(first, second, multiplier, tie_multiplier):
+    """Exact two-pick EV with pushes/ties, under the independence assumption."""
+    w1, t1 = float(first["p_pick"]), float(first["p_push"])
+    w2, t2 = float(second["p_pick"]), float(second["p_push"])
+    gross = (
+        multiplier * w1 * w2
+        + tie_multiplier * (w1 * t2 + t1 * w2)
+        + t1 * t2
+    )
+    return gross - 1.0
+
+
+def _build_two_pick_cards(conn, run_id, game_date):
+    """Create only cross-game cards and gate the actual entry-level EV."""
+    terms = _configured_card_terms()
+    if not terms:
+        conn.execute(
+            """UPDATE prizepicks_picks
+               SET hold_reason = TRIM(
+                 COALESCE(hold_reason || '; ', '') ||
+                 'displayed 2-pick and tie multipliers not configured'
+               )
+               WHERE run_id = ?""",
+            (run_id,),
+        )
+        conn.commit()
+        return 0
+
+    multiplier, tie_multiplier = terms
+    picks = conn.execute(
+        """SELECT * FROM prizepicks_picks
+           WHERE run_id = ? AND candidate = 1
+           ORDER BY id""",
+        (run_id,),
+    ).fetchall()
+    pairs = []
+    for first, second in combinations(picks, 2):
+        if first["game_pk"] == second["game_pk"]:
+            continue
+        ev = two_pick_ev(first, second, multiplier, tie_multiplier)
+        pairs.append((ev, first, second))
+
+    # Accuracy-first exposure control: select the highest-EV non-overlapping
+    # cards instead of reusing one uncertain anchor across the whole slate.
+    selected = set()
+    used_picks = set()
+    for ev, first, second in sorted(pairs, key=lambda item: item[0], reverse=True):
+        if ev < CARD_MIN_EV or len(selected) >= max(MAX_CARDS, 0):
+            continue
+        if first["id"] in used_picks or second["id"] in used_picks:
+            continue
+        selected.add((first["id"], second["id"]))
+        used_picks.update((first["id"], second["id"]))
+
+    playable_pick_ids = set()
+    for ev, first, second in pairs:
+        playable = (first["id"], second["id"]) in selected
+        rationale = (
+            f"cross-game independence approximation; displayed payout "
+            f"{multiplier:g}x; tie+win {tie_multiplier:g}x; "
+            f"required EV {CARD_MIN_EV:.1%}; max cards {MAX_CARDS}"
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO prizepicks_cards
+               (run_id, created_at, game_date, pick_1_id, pick_2_id,
+                multiplier, tie_multiplier, expected_value, playable,
+                rationale)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                db.utcnow(),
+                game_date,
+                first["id"],
+                second["id"],
+                multiplier,
+                tie_multiplier,
+                ev,
+                1 if playable else 0,
+                rationale,
+            ),
+        )
+        if playable:
+            playable_pick_ids.update((first["id"], second["id"]))
+
+    if playable_pick_ids:
+        placeholders = ",".join("?" for _ in playable_pick_ids)
+        conn.execute(
+            f"UPDATE prizepicks_picks SET playable=1 "
+            f"WHERE id IN ({placeholders})",
+            tuple(sorted(playable_pick_ids)),
+        )
+    conn.commit()
+    return len(selected)
+
+
 def grade_date(game_date=None):
     """Grade ungraded PrizePicks picks against box-score actuals."""
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     ensure_schema(conn)
     picks = conn.execute(
@@ -470,7 +741,9 @@ def grade_date(game_date=None):
                 )
             except Exception as exc:
                 print(f"[prizepicks] actuals for game {game_pk} failed ({exc})")
-                actuals_by_game[game_pk] = {}
+                actuals_by_game[game_pk] = None
+        if actuals_by_game[game_pk] is None:
+            continue
         stat = "ks" if pick["market"] == "pitcher_strikeouts" else "outs"
         box = actuals_by_game[game_pk].get(pick["player_id"])
         actual = box.get(stat) if box else None
@@ -490,8 +763,51 @@ def grade_date(game_date=None):
             (pick["id"], db.utcnow(), actual, outcome, won))
         conn.commit()
         graded += 1
-    print(f"[prizepicks] graded {graded} picks")
+    cards_graded = _grade_cards(conn, game_date)
+    print(f"[prizepicks] graded {graded} picks and {cards_graded} cards")
     conn.close()
+    return graded
+
+
+def _grade_cards(conn, game_date):
+    cards = conn.execute(
+        """SELECT c.*, r1.pick_won AS won_1, r1.outcome AS outcome_1,
+                         r2.pick_won AS won_2, r2.outcome AS outcome_2
+           FROM prizepicks_cards c
+           JOIN prizepicks_results r1 ON r1.pick_id = c.pick_1_id
+           JOIN prizepicks_results r2 ON r2.pick_id = c.pick_2_id
+           LEFT JOIN prizepicks_card_results cr ON cr.card_id = c.id
+           WHERE c.game_date = ? AND cr.id IS NULL""",
+        (game_date,),
+    ).fetchall()
+    graded = 0
+    tie_states = {"push", "void"}
+    for card in cards:
+        first_tie = card["outcome_1"] in tie_states
+        second_tie = card["outcome_2"] in tie_states
+        if card["won_1"] == 1 and card["won_2"] == 1:
+            outcome = "win"
+            profit = float(card["multiplier"]) - 1.0
+        elif (
+            (card["won_1"] == 1 and second_tie)
+            or (card["won_2"] == 1 and first_tie)
+        ):
+            outcome = "tie_win"
+            profit = float(card["tie_multiplier"]) - 1.0
+        elif first_tie and second_tie:
+            outcome = "refund"
+            profit = 0.0
+        else:
+            outcome = "loss"
+            profit = -1.0
+        conn.execute(
+            """INSERT INTO prizepicks_card_results
+               (card_id, graded_at, outcome, profit_units)
+               VALUES (?,?,?,?)""",
+            (card["id"], db.utcnow(), outcome, profit),
+        )
+        graded += 1
+    conn.commit()
     return graded
 
 
@@ -505,7 +821,7 @@ def run_all(game_date=None):
 
 
 def print_board(game_date=None):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     ensure_schema(conn)
     run = conn.execute(

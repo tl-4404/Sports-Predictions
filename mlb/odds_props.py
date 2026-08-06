@@ -25,7 +25,7 @@ Usage:
 """
 import json
 import os
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -38,6 +38,7 @@ except ImportError:
 
 import db
 import netfetch
+from timeutils import is_open_slate_event, slate_date, slate_today
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "baseball_mlb"
@@ -71,12 +72,17 @@ class TheOddsAPIPropsFetcher:
 
     def fetch(self, game_date=None):
         """Returns a list of prop_lines row dicts for the given date."""
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         as_of = datetime.now(timezone.utc).isoformat()
         events = self._get(f"/sports/{SPORT}/events", dateFormat="iso")
         rows = []
         for ev in events:
-            if not ev.get("commence_time", "").startswith(game_date):
+            start_time = ev.get("commence_time")
+            if slate_date(start_time) != game_date:
+                continue
+            if game_date == slate_today() and not is_open_slate_event(
+                start_time, game_date
+            ):
                 continue
             # props only exist on the per-event odds endpoint
             data = self._get(
@@ -122,7 +128,7 @@ class StubPropsFetcher:
     """
 
     def fetch(self, game_date=None):
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         as_of = datetime.now(timezone.utc).isoformat()
         path = next((p for p in STUB_PATHS if p.exists()), None)
         if path is None:
@@ -229,7 +235,7 @@ class DraftKingsScraper:
                            else tuple(DK_PITCHER_CATEGORIES))
 
     def fetch(self, game_date=None):
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         as_of = datetime.now(timezone.utc).isoformat()
         rows = []
         for cat in self.categories:
@@ -247,8 +253,10 @@ class DraftKingsScraper:
 
     def _parse(self, payload, game_date, as_of):
         eg = payload.get("eventGroup", {}) or {}
-        event_day = {str(ev.get("eventId")): (ev.get("startDate") or "")[:10]
-                     for ev in eg.get("events", []) or []}
+        event_start = {
+            str(ev.get("eventId")): ev.get("startDate")
+            for ev in eg.get("events", []) or []
+        }
         rows = []
         for cat in eg.get("offerCategories", []) or []:
             for sub in cat.get("offerSubcategoryDescriptors", []) or []:
@@ -259,8 +267,15 @@ class DraftKingsScraper:
                 for offer_list in osub.get("offers", []) or []:
                     for offer in offer_list or []:
                         eid = str(offer.get("eventId"))
-                        day = event_day.get(eid)
+                        start_time = event_start.get(eid)
+                        day = slate_date(start_time)
                         if day and day != game_date:
+                            continue
+                        if (
+                            game_date == slate_today()
+                            and start_time
+                            and not is_open_slate_event(start_time, game_date)
+                        ):
                             continue
                         for (player, line), sides in _dk_offer_pair(offer).items():
                             if player is None or line is None:
@@ -296,7 +311,7 @@ class FanDuelScraper:
         self.page = page or os.getenv("FD_MLB_PAGE", FD_MLB_PAGE)
 
     def fetch(self, game_date=None):
-        game_date = game_date or date.today().isoformat()
+        game_date = game_date or slate_today()
         as_of = datetime.now(timezone.utc).isoformat()
         payload = netfetch.get_json(
             self.base,
@@ -307,16 +322,25 @@ class FanDuelScraper:
     def _parse(self, payload, game_date, as_of):
         att = payload.get("attachments", {}) or {}
         events = att.get("events", {}) or {}
-        event_day = {str(k): (v.get("openDate") or "")[:10]
-                     for k, v in events.items()}
+        event_start = {
+            str(k): v.get("openDate")
+            for k, v in events.items()
+        }
         rows = []
         for mkt in (att.get("markets", {}) or {}).values():
             market = _prop_market(mkt.get("marketType") or mkt.get("marketName"))
             if not market:
                 continue
             eid = str(mkt.get("eventId"))
-            day = event_day.get(eid)
+            start_time = event_start.get(eid)
+            day = slate_date(start_time)
             if day and day != game_date:
+                continue
+            if (
+                game_date == slate_today()
+                and start_time
+                and not is_open_slate_event(start_time, game_date)
+            ):
                 continue
             player = _fd_player(mkt.get("marketName"))
             if not player:

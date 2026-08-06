@@ -6,12 +6,11 @@ Three stages, run after the simulator lane:
              (injury chatter, velocity dips, skipped starts, bullpen state,
              roof/ump notes). Hard numbers (lines, odds, stats) always come
              from APIs — never from the LLM.
-  predict  — an independent Claude probability per posted line. Sees the
-             fact packet and the LINE, but not the odds price and not the
-             simulator's output, so the lane stays uncorrelated.
-  judge    — combines sim + llm + de-vigged market. Bounded authority:
-             the final probability is clamped to the config blend ± JUDGE_BAND,
-             and the judge may veto (pass) but not invent bets below MIN_EDGE.
+  predict  — an independent, analysis-only Claude probability per posted line.
+             It sees the fact packet and LINE, but not odds or simulator output.
+  judge    — an adversarial safety gate over simulator candidates. It may
+             erode an approved edge by at most JUDGE_BAND or veto it; it cannot
+             strengthen, flip, or create a wager.
 
 All rows land in prop_predictions under source='llm' / source='judge' with
 the SAME run_id as the sim rows they consumed, so grading and the UI can
@@ -22,18 +21,20 @@ Requires ANTHROPIC_API_KEY (skips gracefully when absent).
 import json
 import os
 import re
-from datetime import date
 
+import calibration
 import db
 import data_today
+import decision
 import form
 from factors import park_k_factor, ump_k_factor
 from betting_math import consensus_p_over, kelly_fraction
+from timeutils import slate_today
 
 MODEL = os.getenv("SPORTSAID_LLM_MODEL", "claude-opus-4-8")
-MIN_EDGE = 0.03
-W_SIM = 0.70          # prior blend weight on the simulator
-JUDGE_BAND = 0.05     # judge may move the blended prob at most this far
+MIN_EDGE = decision.MIN_EDGE
+W_SIM = 1.00          # compatibility constant: LLM is now veto-only
+JUDGE_BAND = 0.03     # judge may only erode an approved edge by this much
 MAX_SEARCHES_PER_GAME = 5
 
 _anthropic_client = None
@@ -137,7 +138,7 @@ def fetch_facts(game, client=None):
 
 
 def facts_stage(game_date=None):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     ensure_facts_schema(conn)
     games = data_today.get_schedule(game_date)
@@ -251,7 +252,7 @@ Return one entry per line above. p_over is the probability the OVER hits
 
 def llm_predict_stage(game_date=None, run_id=None):
     """Log an independent Claude probability for every posted line."""
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     db.ensure_schema(conn)
     ensure_facts_schema(conn)
@@ -264,7 +265,7 @@ def llm_predict_stage(game_date=None, run_id=None):
         return 0
 
     lines_by_player = {}
-    for row in db.latest_lines(conn, game_date):
+    for row in db.active_lines(conn, game_date):
         lines_by_player.setdefault(_norm(row["player_name"]), []).append(row)
 
     n = 0
@@ -294,15 +295,30 @@ def llm_predict_stage(game_date=None, run_id=None):
 
 def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
                          line_rows, flags, k_park, k_ump, ump_name):
-    profile = data_today.get_pitcher_profile(pitcher["id"])
+    try:
+        profile = data_today.get_pitcher_profile(
+            pitcher["id"], as_of_date=game_date
+        )
+    except TypeError:
+        profile = data_today.get_pitcher_profile(pitcher["id"])
     opp_ids = game["away_lineup"] if side == "home" else game["home_lineup"]
-    if opp_ids:
+    lineup_confirmed = decision.complete_lineup(opp_ids)
+    if lineup_confirmed:
         lineup_ks = [round(data_today.get_batter_rates(b, pitcher["hand"])["k"], 3)
                      for b in opp_ids[:9]]
         lineup_status = "confirmed lineup"
     else:
         lineup_ks = [data_today.LEAGUE["k"]] * 9
         lineup_status = "lineup not posted — league-average assumed"
+    quality_reasons = data_today.game_gate_reasons(game, game_date)
+    if not lineup_confirmed:
+        quality_reasons.append(
+            "opposing starting lineup is not complete (nine hitters)"
+        )
+    workload = profile.get("workload") or {
+        "reasons": ["dated recent-start workload evidence unavailable"]
+    }
+    quality_reasons.extend(workload.get("reasons") or [])
 
     distinct = sorted({(r["market"], r["line"]) for r in line_rows})
     lines_block = "\n".join(
@@ -339,14 +355,25 @@ def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
         books = by_key.get(key)
         if not books:
             continue
-        p_over = min(max(float(prop["p_over"]), 0.02), 0.98)
+        raw_p_over = min(max(float(prop["p_over"]), 0.02), 0.98)
+        p_over = calibration.calibrated_probability(
+            conn,
+            raw_p_over,
+            key[0],
+            "llm",
+            as_of_date=game_date,
+            policy_version=decision.POLICY_VERSION,
+        )
         market_p = consensus_p_over(
             [(b["over_odds"], b["under_odds"]) for b in books])
         row = _priced_row(
-            game_date, game, pitcher, key[0], key[1], p_over, books, market_p,
+            conn, game_date, game, pitcher, key[0], key[1], p_over, books, market_p,
             run_id=run_id, source="llm",
             rationale=json.dumps({"rationale": prop.get("rationale"),
                                   "confidence": prop.get("confidence")}),
+            raw_p_over=raw_p_over,
+            quality_reasons=quality_reasons,
+            allow_auto=False,
         )
         db.insert_prediction(conn, row)
         logged += 1
@@ -356,15 +383,13 @@ def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
 # ── stage 3: bounded judge ───────────────────────────────────────────────────
 
 JUDGE_SYSTEM = (
-    "You are the final decision layer of a betting pipeline. Two independent "
-    "estimates exist for each prop: a plate-appearance Monte Carlo simulator "
-    "(strong on rates and distributions, blind to news) and an LLM handicapper "
-    "(sees news, weaker calibration). You also see the de-vigged market "
-    "consensus — treat it as a sharp opinion that is usually right. Your job: "
-    "adjust the blended probability only when the news/flags justify it, and "
-    "veto bets when something the simulator cannot see (injury, short leash, "
-    "lineup rest) undermines the edge. You cannot move the probability far — "
-    "the pipeline clamps you to a narrow band. Passing is a good decision."
+    "You are an adversarial safety layer, not a second betting model. The "
+    "plate-appearance simulator owns the numeric candidate and the de-vigged "
+    "market is the anchor. Use fresh qualitative evidence only to weaken or "
+    "veto a simulator candidate when injury, role, workload, lineup, weather, "
+    "or bullpen context makes its assumptions unsafe. You may never strengthen "
+    "an edge, flip a side, or create a bet the simulator did not approve. "
+    "Passing is a good decision."
 )
 
 JUDGE_SCHEMA = {
@@ -400,17 +425,18 @@ JUDGE_PROMPT = """{game_date}: props for {pitcher}.
 News flags: {flags}
 Game notes: {game_notes}
 
-Per prop — simulator P(over), LLM P(over) (with its confidence), de-vigged
-market P(over), and the blended prior (weights: sim {w_sim:.0%} / llm {w_llm:.0%}):
+Per prop — simulator P(over), analysis-only LLM P(over), and de-vigged market
+P(over):
 {props_block}
 
-For each prop return final_p_over (your best calibrated estimate; it will be
-clamped to blend ± {band:.0%}) and action: "bet" if you endorse betting when
-the edge clears the threshold, "pass" to veto regardless of edge (say why)."""
+For each prop return final_p_over and action. The system will clamp the number
+to the simulator ± {band:.0%}, permit movement only toward the market, and
+preserve the simulator side. "bet" means no qualitative veto was found; it
+does not create a bet when the simulator is in HOLD."""
 
 
 def judge_stage(game_date=None, run_id=None):
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     db.ensure_schema(conn)
     ensure_facts_schema(conn)
@@ -434,7 +460,7 @@ def judge_stage(game_date=None, run_id=None):
                   .setdefault((r["market"], r["line"]), {})[r["source"]] = r
 
     lines_by_player = {}
-    for row in db.latest_lines(conn, game_date):
+    for row in db.active_lines(conn, game_date):
         key = (_norm(row["player_name"]), row["market"], row["line"])
         lines_by_player.setdefault(key, []).append(row)
 
@@ -468,15 +494,14 @@ def judge_stage(game_date=None, run_id=None):
 def _judge_pitcher(conn, client, run_id, game_date, pitcher_name, candidates,
                    flags, lines_by_player):
     props_block = []
-    blends = {}
     for (market, line), (sim, llm_row) in sorted(candidates.items()):
-        blend = W_SIM * sim["p_over"] + (1 - W_SIM) * llm_row["p_over"]
-        blends[(market, line)] = blend
         llm_meta = _lenient_json(llm_row["rationale"] or "") or {}
         props_block.append(
             f"- {market} line {line}: sim {sim['p_over']:.3f}, "
             f"llm {llm_row['p_over']:.3f} (conf {llm_meta.get('confidence', '?')}), "
-            f"market {sim['market_p_over']:.3f}, blend {blend:.3f}")
+            f"market {sim['market_p_over']:.3f}, "
+            f"simulator action "
+            f"{sim['candidate_side'] or sim['bet_side'] or 'HOLD'}")
 
     prompt = JUDGE_PROMPT.format(
         game_date=game_date, pitcher=pitcher_name,
@@ -501,24 +526,43 @@ def _judge_pitcher(conn, client, run_id, game_date, pitcher_name, candidates,
         if key not in candidates:
             continue
         sim, llm_row = candidates[key]
-        blend = blends[key]
-        # bounded authority: clamp to blend ± band, no matter what it said
-        p_final = min(max(float(dec["final_p_over"]), blend - JUDGE_BAND),
-                      blend + JUDGE_BAND)
-        p_final = min(max(p_final, 0.02), 0.98)
+        approved_side = sim["candidate_side"] or sim["bet_side"]
+        p_final = decision.erode_only(
+            sim["p_over"],
+            float(dec["final_p_over"]),
+            approved_side,
+            JUDGE_BAND,
+        )
 
         books = lines_by_player.get((_norm(pitcher_name), key[0], key[1]), [])
         market_p = sim["market_p_over"]
         veto = dec["action"] == "pass"
+        quality = []
+        try:
+            quality.extend(
+                json.loads(sim["quality_json"] or "{}").get(
+                    "hold_reasons", []
+                )
+            )
+        except (TypeError, ValueError):
+            pass
+        if veto:
+            quality.append(
+                f"LLM safety veto: {dec.get('rationale') or 'unspecified'}"
+            )
         row = _priced_row(
-            game_date, {"game_pk": sim["game_pk"]},
+            conn, game_date, {"game_pk": sim["game_pk"]},
             {"name": pitcher_name, "id": sim["player_id"]},
             key[0], key[1], p_final, books, market_p,
             run_id=run_id, source="judge",
             rationale=json.dumps({"action": dec["action"],
                                   "rationale": dec.get("rationale"),
-                                  "blend": round(blend, 4)}),
-            suppress_bet=veto,
+                                  "simulator_p": round(sim["p_over"], 4),
+                                  "authority": "erode-only"}),
+            raw_p_over=p_final,
+            quality_reasons=quality,
+            allow_auto=bool(approved_side) and not veto,
+            required_side=approved_side,
         )
         db.insert_prediction(conn, row)
         logged += 1
@@ -538,44 +582,113 @@ def _latest_sim_run(conn, game_date):
     return row["r"] if row else None
 
 
-def _priced_row(game_date, game, pitcher, market, line, p_over, books,
-                market_p, run_id, source, rationale, suppress_bet=False):
-    """Build a prop_predictions row with edge / bet side / Kelly stake."""
+def _priced_row(
+    conn,
+    game_date,
+    game,
+    pitcher,
+    market,
+    line,
+    p_over,
+    books,
+    market_p,
+    run_id,
+    source,
+    rationale,
+    raw_p_over=None,
+    quality_reasons=(),
+    allow_auto=False,
+    required_side=None,
+):
+    """Build a row through the same fail-closed policy as the simulator."""
     from betting_math import american_to_decimal
 
-    edge_over = p_over - market_p if market_p is not None else None
-    edge_under = (1 - p_over) - (1 - market_p) if market_p is not None else None
+    priced_books = {
+        book["book"]
+        for book in books
+        if book["over_odds"] is not None and book["under_odds"] is not None
+    }
+    validation_source = "sim" if source == "judge" else source
+    validation = calibration.validation_status(
+        conn,
+        market,
+        validation_source,
+        as_of_date=game_date,
+        policy_version=decision.POLICY_VERSION,
+    )
+    call = decision.decide(
+        p_over,
+        market_p,
+        book_count=len(priced_books),
+        validation=validation,
+        quality_reasons=quality_reasons,
+        allow_auto=allow_auto,
+        required_side=required_side,
+    )
 
     bet_side, kelly, best = None, 0.0, None
-    if not suppress_bet and edge_over is not None:
-        if edge_over >= MIN_EDGE and edge_over >= (edge_under or 0):
-            priced = [b for b in books if b["over_odds"] is not None]
-            best = max(priced, key=lambda b: american_to_decimal(b["over_odds"]),
-                       default=None)
-            if best:
-                bet_side = "over"
-                kelly = kelly_fraction(p_over, best["over_odds"])
-        elif edge_under is not None and edge_under >= MIN_EDGE:
-            priced = [b for b in books if b["under_odds"] is not None]
-            best = max(priced, key=lambda b: american_to_decimal(b["under_odds"]),
-                       default=None)
-            if best:
-                bet_side = "under"
-                kelly = kelly_fraction(1 - p_over, best["under_odds"])
+    if call.bet_side == "over":
+        priced = [b for b in books if b["over_odds"] is not None]
+        best = max(
+            priced,
+            key=lambda b: american_to_decimal(b["over_odds"]),
+            default=None,
+        )
+        if best:
+            bet_side = "over"
+            kelly = kelly_fraction(
+                call.decision_p_over,
+                best["over_odds"],
+                cap=decision.MAX_KELLY,
+            )
+    elif call.bet_side == "under":
+        priced = [b for b in books if b["under_odds"] is not None]
+        best = max(
+            priced,
+            key=lambda b: american_to_decimal(b["under_odds"]),
+            default=None,
+        )
+        if best:
+            bet_side = "under"
+            kelly = kelly_fraction(
+                1.0 - call.decision_p_over,
+                best["under_odds"],
+                cap=decision.MAX_KELLY,
+            )
     if best is None and books:
         best = books[0]
+
+    try:
+        rationale_meta = json.loads(rationale or "{}")
+    except (TypeError, ValueError):
+        rationale_meta = {"rationale": rationale}
+    rationale_meta.update({
+        "hold_reasons": list(call.hold_reasons),
+        "validation": validation,
+        "decision_p_over": call.decision_p_over,
+    })
 
     return {
         "run_id": run_id, "created_at": db.utcnow(), "game_date": game_date,
         "game_pk": game.get("game_pk"), "player_name": pitcher["name"],
         "player_id": pitcher.get("id"), "market": market, "line": line,
-        "source": source, "p_over": p_over, "mean": None,
+        "source": source, "p_over": p_over,
+        "raw_p_over": raw_p_over if raw_p_over is not None else p_over,
+        "decision_p_over": call.decision_p_over, "p_push": 0.0, "mean": None,
         "book": best["book"] if best else None,
         "over_odds": best["over_odds"] if best else None,
         "under_odds": best["under_odds"] if best else None,
-        "market_p_over": market_p, "edge_over": edge_over,
-        "edge_under": edge_under, "bet_side": bet_side, "kelly_frac": kelly,
-        "rationale": rationale,
+        "market_p_over": market_p, "edge_over": call.edge_over,
+        "edge_under": call.edge_under,
+        "candidate_side": required_side if source == "judge" else call.bet_side,
+        "bet_side": bet_side,
+        "kelly_frac": kelly, "rationale": json.dumps(rationale_meta),
+        "policy_version": decision.POLICY_VERSION,
+        "quality_json": json.dumps({
+            "hold_reasons": list(call.hold_reasons),
+            "validation": validation,
+            "book_count": len(priced_books),
+        }),
     }
 
 

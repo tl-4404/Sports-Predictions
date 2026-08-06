@@ -8,21 +8,15 @@ the confirmed-lineup rerun.
 from __future__ import annotations
 
 import json
-from datetime import date
 
 import data_today
 import db
 import llm_saved_pipeline as policy
-import policy_flags
-
-# Default is bootstrap_gate while the standalone model accumulates a larger clean
-# sample. Set SPORTSAID_BATX_MODE=advisory as calibration matures, or =off for
-# external-model ablation testing.
-BATX_MODE = policy_flags.apply(policy)
+from timeutils import slate_today
 
 
 def refresh_facts(game_date=None) -> int:
-    game_date = game_date or date.today().isoformat()
+    game_date = game_date or slate_today()
     conn = db.connect()
     policy.base.ensure_facts_schema(conn)
     games = data_today.get_schedule(game_date)
@@ -49,7 +43,6 @@ def refresh_facts(game_date=None) -> int:
 
 def run_all(game_date=None):
     """Fresh chat-standard research -> independent prediction -> bounded judge."""
-    print(f"[llm.chat] external model mode: BAT X={BATX_MODE}")
     refresh_facts(game_date)
     policy.base.llm_predict_stage(game_date)
     return policy.base.judge_stage(game_date)

@@ -36,7 +36,7 @@ setup: install env doctor              ## one-command first run: deps + .env + p
 
 .PHONY: doctor
 doctor: $(VENV)                        ## preflight: what's ready for a live run
-	-$(PY) run_pipeline.py --stage doctor
+	$(PY) run_pipeline.py --stage doctor
 
 .PHONY: run
 run: $(VENV)                           ## full pipeline: odds -> predict -> llm -> prizepicks -> grade
@@ -51,7 +51,13 @@ web: $(VENV)                           ## Flask dev server (the board at :5000)
 	$(PY) app.py
 
 .PHONY: backtest
-backtest: $(VENV)                      ## synthetic calibration + flat-market ROI check
+backtest: $(VENV)                      ## real historical check: make backtest DATASET=... ODDS=...
+	@test -n "$(DATASET)" || (echo "DATASET is required; synthetic is only a self-test" && exit 2)
+	@test -n "$(ODDS)" || (echo "ODDS archive is required for market-relative validation" && exit 2)
+	$(PY) mlb/backtest.py "$(DATASET)" --odds "$(ODDS)"
+
+.PHONY: selftest
+selftest: $(VENV)                      ## simulator engine self-consistency only (not accuracy evidence)
 	$(PY) mlb/backtest.py --synthetic --flat-market
 
 .PHONY: test
@@ -60,6 +66,13 @@ test: $(VENV)                          ## run all offline test suites (no networ
 	$(PY) tests/test_prizepicks_offline.py
 	$(PY) tests/test_interface_and_toggle.py
 	$(PY) tests/test_infra.py
+	$(PY) tests/test_app_offline.py
+	$(PY) tests/test_nba_safety.py
+	$(PY) tests/test_llm_chat_pipeline.py
+	$(PY) tests/test_mlb_audit_regressions.py
+	$(PY) tests/test_prizepicks_fetcher_audit.py
+	$(PY) tests/test_safety_regressions.py
+	$(PY) tests/test_accuracy_policy.py
 
 .PHONY: clean
 clean:                                 ## remove the venv
