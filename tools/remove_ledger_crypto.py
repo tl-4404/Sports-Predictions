@@ -2,6 +2,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# This script is intentionally one-shot; the workflow deletes it after a green run.
 
 
 def patch_db():
@@ -29,10 +30,6 @@ def patch_docs():
     text = text.replace(
         "Every prediction insert also writes a SHA-256-hashed `decision_ledger` snapshot.",
         "Every prediction insert also writes an append-only `decision_ledger` snapshot.",
-    )
-    text = text.replace(
-        "The snapshot contains the exact line, line timestamp, first-pitch timestamp, model lane,",
-        "The snapshot contains the exact line, line timestamp, first-pitch timestamp, model lane,",
     )
     text = text.replace(
         "Later reruns create new snapshots and never overwrite an earlier decision.",
