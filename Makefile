@@ -73,6 +73,7 @@ test: $(VENV)                          ## run all offline test suites (no networ
 	$(PY) tests/test_prizepicks_fetcher_audit.py
 	$(PY) tests/test_safety_regressions.py
 	$(PY) tests/test_accuracy_policy.py
+	$(PY) tests/test_merged_audit_policy.py
 
 .PHONY: clean
 clean:                                 ## remove the venv

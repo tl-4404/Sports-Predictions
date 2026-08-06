@@ -18,7 +18,7 @@ def test_saved_policy_installs_merged_audit():
     assert "short, normal, and extended" in prompt
     assert "+2 BF" in prompt and "+4 BF" in prompt
     assert "skill-under" in prompt and "workload-under" in prompt
-    assert "not prices" in prompt
+    assert "not sportsbook prices" in prompt
 
 
 def test_judge_is_75_25_bounded_and_erode_only():

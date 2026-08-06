@@ -137,3 +137,8 @@ The MLB pipeline is actively being calibrated. External-model gates are intentio
 configurable so they can be reduced as SportsAid becomes a stronger standalone
 system. Changes that affect probability, selection or grading behavior should include
 regression tests and a policy-version update.
+
+
+## Merged MLB audit policy
+
+The active consolidated policy is `sportsaid-v5.0-merged-audit`. See `docs/MLB_PIPELINE_V5_MERGED_AUDIT.md` for the v4.2/v5 merge, shadow-mode promotion gates, immutable ledger, calibration, CLV, and refund/void settlement rules.

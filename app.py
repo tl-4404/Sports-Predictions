@@ -398,7 +398,7 @@ def load_lane_scoreboard(db, days=14):
                         ) AS recency_rank
                  FROM prop_predictions p
                  WHERE p.game_date >= ?
-                   AND COALESCE(p.policy_version,'legacy') = 'accuracy_v2'
+                   AND COALESCE(p.policy_version,'legacy') = 'sportsaid-v5.0-merged-audit'
                )
                SELECT p.source,
                       COUNT(*)                                    AS graded,
