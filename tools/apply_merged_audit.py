@@ -79,6 +79,15 @@ def replace_legacy_test_entrypoint() -> None:
     )
 
 
+def patch_llm_regression_wording() -> None:
+    path = ROOT / "tests" / "test_llm_chat_pipeline.py"
+    if path.exists():
+        path.write_text(path.read_text().replace(
+            'assert "not prices" in prompt',
+            'assert "not sportsbook prices" in prompt',
+        ))
+
+
 def remove_one_shot_bootstrap() -> None:
     workflow = ROOT / ".github" / "workflows" / "apply-merged-mlb-audit.yml"
     if workflow.exists():
@@ -91,5 +100,6 @@ patch_makefile()
 patch_app()
 patch_readme()
 replace_legacy_test_entrypoint()
+patch_llm_regression_wording()
 remove_one_shot_bootstrap()
 print("Repository defaults now use the consolidated MLB v4.2/v5 policy")
