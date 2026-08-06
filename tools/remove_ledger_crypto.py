@@ -79,6 +79,46 @@ def patch_tests():
     text = text.replace(old_insert, new_insert)
     app_test.write_text(text)
 
+    audit = ROOT / "tests" / "test_mlb_audit_regressions.py"
+    text = audit.read_text()
+    text = text.replace(
+        '    "rationale": None,\n}',
+        '    "rationale": None,\n'
+        '    "raw_p_over": 0.70,\n'
+        '    "decision_p_over": 0.70,\n'
+        '    "candidate_side": "over",\n'
+        '    "policy_version": "sportsaid-v5.0-merged-audit",\n'
+        '    "decision_status": "candidate",\n'
+        '    "official": 0,\n'
+        '    "provenance": "model",\n'
+        '    "line_as_of": "2026-07-20T15:55:00+00:00",\n'
+        '    "event_start": "2026-07-20T23:00:00+00:00",\n'
+        '    "line_verified": 1,\n'
+        '    "line_tier": "standard",\n'
+        '    "lineup_status": "confirmed",\n'
+        '    "starter_verified": 1,\n'
+        '    "workload_verified": 1,\n'
+        '}',
+    )
+    text = text.replace(
+        '    "p_over": 0.60,\n})',
+        '    "p_over": 0.60,\n    "raw_p_over": 0.60,\n    "decision_p_over": 0.60,\n})',
+    )
+    text = text.replace(
+        '    "kelly_frac": 0.0,\n})',
+        '    "kelly_frac": 0.0,\n    "provenance": "synthetic",\n    "line_verified": 0,\n    "line_tier": "synthetic",\n})',
+    )
+    old_result = '''        """INSERT INTO prop_results\n           (prediction_id, graded_at, actual, outcome, bet_won,\n            profit_units, closing_p_over, clv)\n           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",\n        (prediction_id, "2026-07-21T12:00:00+00:00", 6, "over", 1,\n         0.01, 0.52, 0.08),'''
+    new_result = '''        """INSERT INTO prop_results\n           (prediction_id, graded_at, actual, outcome, settlement_status, bet_won,\n            profit_units, closing_p_over, entry_p_side, closing_p_side, clv,\n            clv_available, roi_eligible)\n           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",\n        (prediction_id, "2026-07-21T12:00:00+00:00", 6, "over", "graded", 1,\n         0.01, 0.52, 0.50, 0.52, 0.02, 1, 0),'''
+    if old_result not in text:
+        raise SystemExit("audit result fixture block not found")
+    text = text.replace(old_result, new_result)
+    text = text.replace(
+        'check("latest rerun retained", eligible and abs(eligible[0]["p_over"] - 0.60) < 1e-9)',
+        'check("first eligible snapshot retained", eligible and abs(eligible[0]["raw_p_over"] - 0.70) < 1e-9)',
+    )
+    audit.write_text(text)
+
 
 def patch_makefile():
     path = ROOT / "Makefile"
