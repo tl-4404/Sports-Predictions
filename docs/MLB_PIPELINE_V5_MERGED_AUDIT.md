@@ -19,11 +19,11 @@ suppressing valid reads, the veto is replaced by a measured stress lane.
 
 ## Immutable decision ledger
 
-Every prediction insert also writes a SHA-256-hashed `decision_ledger` snapshot. The
+Every prediction insert also writes an append-only `decision_ledger` snapshot. The
 snapshot contains the exact line, line timestamp, first-pitch timestamp, model lane,
 raw and decision probabilities, candidate/official status, verification fields,
 calibration state, external-model mode, stress results, suppression reason, and rule
-trace. Later reruns create new snapshots and never overwrite an earlier decision.
+trace. Later reruns create new snapshots and never overwrite an earlier decision. Immutability is enforced by unique IDs, unique ledger keys, insert-only application behavior, and database uniqueness constraints; cryptographic hashing is not required.
 
 `pipeline_runs` records zero-line and failed-closed runs instead of substituting stale
 or inferred lines.

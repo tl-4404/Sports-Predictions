@@ -83,6 +83,20 @@ prediction_base = {
     "bet_side": "over",
     "kelly_frac": 0.01,
     "rationale": None,
+    "raw_p_over": 0.70,
+    "decision_p_over": 0.70,
+    "candidate_side": "over",
+    "policy_version": "sportsaid-v5.0-merged-audit",
+    "decision_status": "candidate",
+    "official": 0,
+    "provenance": "model",
+    "line_as_of": "2026-07-20T15:55:00+00:00",
+    "event_start": "2026-07-20T23:00:00+00:00",
+    "line_verified": 1,
+    "line_tier": "standard",
+    "lineup_status": "confirmed",
+    "starter_verified": 1,
+    "workload_verified": 1,
 }
 old_id = db.insert_prediction(conn, {
     **prediction_base,
@@ -94,6 +108,8 @@ new_id = db.insert_prediction(conn, {
     "run_id": "run-2",
     "created_at": "2026-07-20T16:10:00+00:00",
     "p_over": 0.60,
+    "raw_p_over": 0.60,
+    "decision_p_over": 0.60,
 })
 synthetic_id = db.insert_prediction(conn, {
     **prediction_base,
@@ -109,6 +125,9 @@ synthetic_id = db.insert_prediction(conn, {
     "edge_under": None,
     "bet_side": None,
     "kelly_frac": 0.0,
+    "provenance": "synthetic",
+    "line_verified": 0,
+    "line_tier": "synthetic",
 })
 ladder_id = db.insert_prediction(conn, {
     **prediction_base,
@@ -121,16 +140,17 @@ ladder_id = db.insert_prediction(conn, {
 for prediction_id in (old_id, new_id, synthetic_id, ladder_id):
     conn.execute(
         """INSERT INTO prop_results
-           (prediction_id, graded_at, actual, outcome, bet_won,
-            profit_units, closing_p_over, clv)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (prediction_id, "2026-07-21T12:00:00+00:00", 6, "over", 1,
-         0.01, 0.52, 0.08),
+           (prediction_id, graded_at, actual, outcome, settlement_status, bet_won,
+            profit_units, closing_p_over, entry_p_side, closing_p_side, clv,
+            clv_available, roi_eligible)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (prediction_id, "2026-07-21T12:00:00+00:00", 6, "over", "graded", 1,
+         0.01, 0.52, 0.50, 0.52, 0.02, 1, 0),
     )
 conn.commit()
 eligible = list(calibration._eligible_rows(conn, "2026-07-20"))
 check("repeated reruns count once", len(eligible) == 1, f"(n={len(eligible)})")
-check("latest rerun retained", eligible and abs(eligible[0]["p_over"] - 0.60) < 1e-9)
+check("first eligible snapshot retained", eligible and abs(eligible[0]["raw_p_over"] - 0.70) < 1e-9)
 check("correlated alternate ladder counts once", len(eligible) == 1)
 check("synthetic no-market row excluded",
       all(row["market_p_over"] is not None for row in eligible))

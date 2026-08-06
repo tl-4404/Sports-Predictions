@@ -109,6 +109,7 @@ def test_ledger_first_snapshot_and_refund_exclusion():
     later = db.insert_prediction(conn, {**base,"run_id":"run-2",
         "created_at":"2026-08-01T18:00:00+00:00","p_over":0.70,"raw_p_over":0.70})
     assert conn.execute("SELECT COUNT(*) n FROM decision_ledger").fetchone()["n"] == 2
+    assert "snapshot_hash" not in {row["name"] for row in conn.execute("PRAGMA table_info(decision_ledger)")}
     for pid, status, outcome in ((first,"graded","over"),(later,"refund","push")):
         conn.execute(
             """INSERT INTO prop_results

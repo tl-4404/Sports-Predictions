@@ -209,7 +209,7 @@ bets = [p for p in preds if p["bet_side"]]
 check(
     "new policy starts in paper mode",
     len(bets) == 0
-    and all("paper mode" in (p["rationale"] or "") for p in preds),
+    and all("shadow mode" in (p["rationale"] or "") for p in preds),
     f"({[(b['player_name'], b['market'], b['bet_side']) for b in bets]})",
 )
 check("kelly stake capped", all((b["kelly_frac"] or 0) <= 0.02 for b in bets))

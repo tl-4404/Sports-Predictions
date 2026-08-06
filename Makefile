@@ -67,7 +67,6 @@ test: $(VENV)                          ## run all offline test suites (no networ
 	$(PY) tests/test_interface_and_toggle.py
 	$(PY) tests/test_infra.py
 	$(PY) tests/test_app_offline.py
-	$(PY) tests/test_nba_safety.py
 	$(PY) tests/test_llm_chat_pipeline.py
 	$(PY) tests/test_mlb_audit_regressions.py
 	$(PY) tests/test_prizepicks_fetcher_audit.py

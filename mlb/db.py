@@ -1,7 +1,6 @@
 """SQLite schema and immutable-ledger helpers for the MLB props pipeline."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sqlite3
@@ -135,7 +134,6 @@ def ensure_schema(conn):
       prediction_id INTEGER NOT NULL UNIQUE REFERENCES prop_predictions(id),
       ledger_key TEXT NOT NULL UNIQUE,
       recorded_at TEXT NOT NULL,
-      snapshot_hash TEXT NOT NULL,
       snapshot_json TEXT NOT NULL
     );
 
@@ -224,6 +222,25 @@ def ensure_schema(conn):
       metadata_json TEXT
     );
     """)
+
+    # Migrate the earlier hash-bearing ledger to the simpler append-only schema.
+    ledger_columns = _columns(conn, "decision_ledger")
+    if "snapshot_hash" in ledger_columns:
+        conn.executescript("""
+        CREATE TABLE decision_ledger_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          prediction_id INTEGER NOT NULL UNIQUE REFERENCES prop_predictions(id),
+          ledger_key TEXT NOT NULL UNIQUE,
+          recorded_at TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL
+        );
+        INSERT INTO decision_ledger_v2
+          (id,prediction_id,ledger_key,recorded_at,snapshot_json)
+        SELECT id,prediction_id,ledger_key,recorded_at,snapshot_json
+        FROM decision_ledger;
+        DROP TABLE decision_ledger;
+        ALTER TABLE decision_ledger_v2 RENAME TO decision_ledger;
+        """)
 
     # Safe migrations from every earlier schema version.
     line_cols = {
@@ -373,12 +390,11 @@ def insert_prediction(conn, row):
     snapshot = {k: row.get(k) for k in sorted(row)}
     snapshot["prediction_id"] = prediction_id
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     conn.execute(
         """INSERT INTO decision_ledger
-           (prediction_id,ledger_key,recorded_at,snapshot_hash,snapshot_json)
-           VALUES (?,?,?,?,?)""",
-        (prediction_id, ledger_key, utcnow(), digest, canonical),
+           (prediction_id,ledger_key,recorded_at,snapshot_json)
+           VALUES (?,?,?,?)""",
+        (prediction_id, ledger_key, utcnow(), canonical),
     )
     conn.execute("UPDATE prop_predictions SET ledger_key=? WHERE id=?", (ledger_key, prediction_id))
     conn.commit()

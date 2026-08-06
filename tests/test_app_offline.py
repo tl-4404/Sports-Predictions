@@ -45,7 +45,9 @@ def mkrow(gd, src, p_over, bet="over", kelly=0.02):
             "book": "BookA", "over_odds": -110, "under_odds": -110,
             "market_p_over": 0.5, "edge_over": p_over - 0.5,
             "edge_under": 0.5 - p_over, "bet_side": bet, "kelly_frac": kelly,
-            "policy_version": "accuracy_v2",
+            "policy_version": "sportsaid-v5.0-merged-audit",
+            "candidate_side": bet, "decision_status": "official",
+            "official": 1, "selected_for_card": 1,
             "rationale": '{"action":"bet","rationale":"deep start likely"}'
                          if src != "sim" else None}
 
@@ -65,10 +67,11 @@ with app.app_context():
         profit = 0.02 * 0.909 if won else -0.02
         conn.execute(
             """INSERT INTO prop_results (prediction_id, graded_at, actual,
-               outcome, bet_won, profit_units, closing_p_over, clv)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (pid, propdb.utcnow(), 8, "over", won, profit, 0.55,
-             0.09 if won else -0.02))
+               outcome, settlement_status, bet_won, profit_units, closing_p_over,
+               entry_p_side, closing_p_side, clv, clv_available, roi_eligible)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (pid, propdb.utcnow(), 8, "over", "win" if won else "loss",
+             won, profit, 0.55, 0.50, 0.55, 0.09 if won else -0.02, 1, 1))
     conn.commit()
 
     # data-layer checks

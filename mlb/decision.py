@@ -17,6 +17,7 @@ FULL_SEGMENT_ROWS = int(os.getenv("MLB_FULL_SEGMENT_ROWS", "500"))
 MIN_BOOKS = int(os.getenv("MLB_MIN_BOOKS", "2"))
 MAX_KELLY = float(os.getenv("MLB_MAX_KELLY", "0.01"))
 MAX_MODEL_MARKET_GAP = float(os.getenv("MLB_MAX_AUTO_GAP", "0.12"))
+MAX_AUTO_GAP = MAX_MODEL_MARKET_GAP  # backward-compatible import
 MAX_LANE_GAP = float(os.getenv("MLB_MAX_LANE_GAP", "0.12"))
 MAX_OFFICIAL_KS = int(os.getenv("MLB_MAX_OFFICIAL_KS", "2"))
 SHADOW_MODE = os.getenv("MLB_SHADOW_MODE", "1").strip().lower() not in {
