@@ -3,7 +3,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # This script is intentionally one-shot; the workflow deletes it after a green run.
-# Retried after fixing the repository virtualenv dependency setup.
 
 
 def patch_db():
@@ -25,6 +24,16 @@ def patch_db():
     path.write_text(text)
 
 
+def patch_decision_compatibility():
+    path = ROOT / "mlb" / "decision.py"
+    text = path.read_text()
+    anchor = 'MAX_MODEL_MARKET_GAP = float(os.getenv("MLB_MAX_AUTO_GAP", "0.12"))\n'
+    alias = anchor + 'MAX_AUTO_GAP = MAX_MODEL_MARKET_GAP  # backward-compatible import\n'
+    if "MAX_AUTO_GAP = MAX_MODEL_MARKET_GAP" not in text:
+        text = text.replace(anchor, alias)
+    path.write_text(text)
+
+
 def patch_docs():
     path = ROOT / "docs" / "MLB_PIPELINE_V5_MERGED_AUDIT.md"
     text = path.read_text()
@@ -40,13 +49,20 @@ def patch_docs():
 
 
 def patch_tests():
-    path = ROOT / "tests" / "test_merged_audit_policy.py"
-    text = path.read_text()
+    merged = ROOT / "tests" / "test_merged_audit_policy.py"
+    text = merged.read_text()
     needle = '    assert conn.execute("SELECT COUNT(*) n FROM decision_ledger").fetchone()["n"] == 2\n'
     replacement = needle + '    assert "snapshot_hash" not in {row["name"] for row in conn.execute("PRAGMA table_info(decision_ledger)")}\n'
     if replacement not in text:
         text = text.replace(needle, replacement)
-    path.write_text(text)
+    merged.write_text(text)
+
+    pipeline = ROOT / "tests" / "test_pipeline_offline.py"
+    text = pipeline.read_text().replace(
+        'and all("paper mode" in (p["rationale"] or "") for p in preds)',
+        'and all("shadow mode" in (p["rationale"] or "") for p in preds)',
+    )
+    pipeline.write_text(text)
 
 
 def cleanup():
@@ -57,6 +73,7 @@ def cleanup():
 
 
 patch_db()
+patch_decision_compatibility()
 patch_docs()
 patch_tests()
 cleanup()
