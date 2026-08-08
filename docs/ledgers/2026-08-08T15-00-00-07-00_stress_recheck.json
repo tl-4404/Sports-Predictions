@@ -1,0 +1,59 @@
+{
+  "timestamp_local": "2026-08-08T15:00:00-07:00",
+  "lane": "LLM_LIVE",
+  "shadow_model": "SHADOW_NOT_EXECUTED",
+  "purpose": "Second-pass stress recheck of the 14:58 actionable top board after confirmed lineups",
+  "rules_applied": [
+    "exact/consensus threshold integrity",
+    "confirmed opponent lineup",
+    "+4 batters-faced stress for K unders",
+    "+2 batters-faced/workload stress for outs",
+    "recent pitch-count and leash tail",
+    "bullpen state",
+    "weather/run environment",
+    "recent form and same/opponent matchup context",
+    "one primary prop per pitcher"
+  ],
+  "material_changes": [
+    {
+      "prop": "Jackson Jobe UNDER 13.5 outs",
+      "previous_probability": 0.595,
+      "revised_probability": 0.560,
+      "reason": "Final rehab outing was four innings; 13.5 is an extremely low threshold and reaching 4.2 innings beats the under. Workload cap remains real but was overweighted previously."
+    },
+    {
+      "prop": "Michael King UNDER 5.5 strikeouts",
+      "previous_probability": 0.590,
+      "revised_probability": 0.545,
+      "reason": "Recent five-start K totals 5,4,4,7,6; +4-BF stress materially erodes the under. Removed from top tier."
+    },
+    {
+      "prop": "Yoshinobu Yamamoto OVER 5.5 strikeouts",
+      "previous_probability": 0.575,
+      "revised_probability": 0.555,
+      "reason": "Season K/9 and recent 3K/5K starts make 5.5 closer to efficient despite strong career history vs Arizona."
+    },
+    {
+      "prop": "Landen Roupp UNDER 16.5 outs",
+      "previous_probability": 0.585,
+      "revised_probability": 0.575,
+      "reason": "Detroit left-handed depth and wind out support the under, but Roupp has multiple 6-8 inning starts and 16.5 is not a soft workload line."
+    }
+  ],
+  "revised_top12": [
+    {"rank":1,"prop":"Peter Lambert OVER 4.5 K","probability":0.615},
+    {"rank":2,"prop":"Matthew Liberatore UNDER 17.5 outs","probability":0.605},
+    {"rank":3,"prop":"Gavin Williams OVER 7.5 K","probability":0.595},
+    {"rank":4,"prop":"Kyle Freeland UNDER 17.5 outs","probability":0.590},
+    {"rank":5,"prop":"Chase Burns OVER 5.5 K","probability":0.585},
+    {"rank":6,"prop":"Taj Bradley OVER 16.5 outs","probability":0.580},
+    {"rank":7,"prop":"Landen Roupp UNDER 16.5 outs","probability":0.575},
+    {"rank":8,"prop":"Anthony Kay OVER 3.5 K","probability":0.575},
+    {"rank":9,"prop":"Jacob deGrom OVER 17.5 outs","probability":0.570},
+    {"rank":10,"prop":"Jackson Jobe UNDER 13.5 outs","probability":0.560},
+    {"rank":11,"prop":"Yoshinobu Yamamoto OVER 5.5 K","probability":0.555},
+    {"rank":12,"prop":"Michael King OVER 17.5 outs","probability":0.550}
+  ],
+  "near_lock_excluded": "Aaron Nola UNDER 17.5 outs omitted from stable top-12 because TOR-PHI starts at 15:05 PT.",
+  "notes": "Probabilities are LLM live-lane estimates only. Consensus thresholds should still be checked against the user's exact platform before entry. No numerical shadow output was blended."
+}
