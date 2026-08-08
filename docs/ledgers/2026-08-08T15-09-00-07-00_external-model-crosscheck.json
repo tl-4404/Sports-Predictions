@@ -1,0 +1,38 @@
+{
+  "snapshot_local": "2026-08-08T15:09:00-07:00",
+  "scope": "remaining MLB games only; TOR-PHI and earlier excluded as started/locked",
+  "live_lane": "LLM_ONLY",
+  "shadow_model_status": "SHADOW_NOT_EXECUTED",
+  "external_crosscheck": {
+    "THE_BAT_X": "directional/public ROS skill baseline only; exact Aug 8 daily prop projections not publicly verified, so none fabricated",
+    "PickLabs_RotoGrinders": {
+      "Matthew_Liberatore_less_29.5_fantasy": {"winpct": 0.639, "edge": 0.095},
+      "Robert_Gasser_less_4.5_K": {"winpct": 0.623, "edge": 0.080}
+    },
+    "SportsPropIQ": {
+      "Peter_Lambert_over_4.5_K_projection": 7.11,
+      "Andrew_Alvarez_under_4.5_K_projection": 3.04,
+      "Kyle_Bradish_under_5.5_K_projection": 4.26
+    },
+    "same_day_market_conflicts": [
+      "Michael King has O4.5/O5.5 K market support, so prior U5.5 lean is downgraded to PASS",
+      "Taj Bradley outs observed at both 16.5 and fresher 17.5; only O16.5 is interesting, 17.5 is PASS",
+      "Peter Lambert K observed 4.5 and 5.5; O4.5 is the actionable threshold, 5.5 is PASS/near fair"
+    ]
+  },
+  "revised_key_reads": [
+    {"prop":"Matthew Liberatore LESS 29.5 fantasy","llm_p":0.615,"external":"PickLabs 63.9%","status":"top cross-model agreement"},
+    {"prop":"Peter Lambert MORE 4.5 K","llm_p":0.605,"external":"SportsPropIQ proj 7.11; THE BAT X directional skill less bullish","status":"strong if exact line 4.5"},
+    {"prop":"Robert Gasser LESS 4.5 K","llm_p":0.605,"external":"PickLabs 62.3%","status":"upgraded/flipped from prior board"},
+    {"prop":"Andrew Alvarez LESS 4.5 K","llm_p":0.600,"external":"SportsPropIQ proj 3.04","status":"time sensitive"},
+    {"prop":"Gavin Williams MORE 7.5 K","llm_p":0.600,"external":"THE BAT X high-K directional support","status":"strong lean"},
+    {"prop":"Kyle Freeland LESS 17.5 outs","llm_p":0.595,"external":"THE BAT X projected innings baseline ~17 outs plus workload context","status":"strong lean"},
+    {"prop":"Chase Burns MORE 5.5 K","llm_p":0.585,"external":"THE BAT X 11.47 K/9 ROS; same-day market over support","status":"workload/matchup haircut"},
+    {"prop":"Kyle Bradish LESS 5.5 K","llm_p":0.580,"external":"SportsPropIQ proj 4.26","status":"survives but below official gate"}
+  ],
+  "notes": [
+    "No exact THE BAT X daily projection was claimed without a verifiable public source.",
+    "No numerical shadow-model output was blended into live LLM probabilities.",
+    "Fantasy lines other than Liberatore 29.5 were not treated as exact-current unless separately supplied/verified."
+  ]
+}
