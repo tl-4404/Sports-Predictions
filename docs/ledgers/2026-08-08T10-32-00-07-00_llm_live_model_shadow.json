@@ -1,0 +1,129 @@
+{
+  "schema_version": "sportsaid-shadow-ledger-v1",
+  "run_id": "2026-08-08T10-32-00-07-00_llm_live_model_shadow",
+  "date": "2026-08-08",
+  "as_of": "2026-08-08T10:32:00-07:00",
+  "user_facing_lane": "LLM_ONLY",
+  "llm_policy": {
+    "version": "chat-preserved-v4.1-compatible-manual-live-pass",
+    "probability_cap": 0.64,
+    "anti_stale": true,
+    "exact_line_required": true,
+    "confirmed_lineup_required_for_official": true,
+    "one_primary_market_per_pitcher": true,
+    "k_under_plus4_batters_faced_stress": true,
+    "fantasy_live_line_required": true
+  },
+  "model_shadow_lane": {
+    "requested": true,
+    "execution_attempted": true,
+    "status": "SHADOW_NOT_EXECUTED",
+    "probabilities": null,
+    "reason": "Connected GitHub repo is readable, but this session has no runnable checkout/network model runtime. Repository main is commit 279db24bb5e64bd2a3379b4515d5e1274d4825b1 from 2026-08-04 and does not contain the later v4.1 append-only ledger patch. Manual reconstruction of model outputs is prohibited by the Aug. 5 audit, so no shadow probabilities were fabricated."
+  },
+  "official_card_at_as_of": [],
+  "official_card_note": "No candidate simultaneously cleared exact-current-line verification, confirmed lineup/workload state, and the strict probability/edge gate at 10:32 PT. Ranked HOLD/LEAN research results are preserved below without retroactive promotion.",
+  "starter_universe": [
+    "Chris Sale", "Gerrit Cole", "Walbert Urena", "Sandy Alcantara", "Gage Jump", "Jake Bennett", "Max Scherzer", "Aaron Nola", "Robert Stock", "Bubba Chandler", "Chase Burns", "Andrew Alvarez", "Taj Bradley", "Robert Gasser", "Clay Holmes", "Seth Lugo", "Gavin Williams", "Anthony Kay", "Peter Lambert", "Michael King", "Jackson Jobe", "Landen Roupp", "Kyle Freeland", "Matthew Liberatore", "Kyle Bradish", "Jacob deGrom", "Yoshinobu Yamamoto", "Brandon Pfaadt", "Griffin Jax", "George Kirby"
+  ],
+  "strikeouts": [
+    {"rank":1,"pitcher":"Chase Burns","line":5.5,"side":"over","p_hit":0.605,"status":"HOLD_LINEUP_TBD"},
+    {"rank":2,"pitcher":"Michael King","line":5.5,"side":"under","p_hit":0.600,"status":"HOLD_LINEUP_TBD"},
+    {"rank":3,"pitcher":"Jake Bennett","line":4.5,"side":"under","p_hit":0.590,"status":"VERIFY_EXACT_PLATFORM_LINE"},
+    {"rank":4,"pitcher":"Peter Lambert","line":4.5,"side":"over","p_hit":0.585,"status":"HOLD_LINEUP_TBD"},
+    {"rank":5,"pitcher":"Jackson Jobe","line":3.5,"side":"over","p_hit":0.580,"status":"HOLD_RETURN_WORKLOAD"},
+    {"rank":6,"pitcher":"Gerrit Cole","line":5.5,"side":"over","p_hit":0.575,"status":"LEAN_CONFIRMED_LINEUP"},
+    {"rank":7,"pitcher":"Kyle Bradish","line":5.5,"side":"under","p_hit":0.575,"status":"HOLD_LINEUP_TBD"},
+    {"rank":8,"pitcher":"Chris Sale","line":6.5,"side":"over","p_hit":0.570,"status":"LEAN_CONFIRMED_LINEUP_LINE_SENSITIVE"},
+    {"rank":9,"pitcher":"Griffin Jax","line":5.5,"side":"under","p_hit":0.565,"status":"HOLD_LINEUP_TBD"},
+    {"rank":10,"pitcher":"Gavin Williams","line":7.5,"side":"over","p_hit":0.560,"status":"HOLD_LINEUP_TBD"},
+    {"rank":11,"pitcher":"Aaron Nola","line":4.5,"side":"over","p_hit":0.535,"status":"PASS_WEATHER_CONFLICT"},
+    {"pitcher":"Walbert Urena","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Sandy Alcantara","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Gage Jump","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Max Scherzer","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Robert Stock","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Bubba Chandler","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Andrew Alvarez","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Taj Bradley","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Robert Gasser","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Clay Holmes","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Seth Lugo","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Anthony Kay","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Landen Roupp","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Kyle Freeland","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Matthew Liberatore","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Jacob deGrom","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Yoshinobu Yamamoto","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Brandon Pfaadt","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"George Kirby","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE_FOR_K"}
+  ],
+  "outs": [
+    {"rank":1,"pitcher":"Matthew Liberatore","line":17.5,"side":"under","p_hit":0.595,"status":"HOLD_LINEUP_TBD"},
+    {"rank":2,"pitcher":"George Kirby","line":17.5,"side":"over","p_hit":0.590,"status":"HOLD_LINEUP_TBD"},
+    {"rank":3,"pitcher":"Aaron Nola","line":17.5,"side":"under","p_hit":0.580,"status":"HOLD_WEATHER"},
+    {"rank":4,"pitcher":"Taj Bradley","line":16.5,"side":"over","p_hit":0.565,"status":"HOLD_LINEUP_TBD"},
+    {"rank":5,"pitcher":"Chris Sale","line":17.5,"side":"over","p_hit":0.560,"status":"LEAN_CONFIRMED_LINEUP"},
+    {"rank":6,"pitcher":"Peter Lambert","line":16.5,"side":"over","p_hit":0.555,"status":"HOLD_LINEUP_TBD"},
+    {"rank":7,"pitcher":"Jake Bennett","line":17.5,"side":"over","p_hit":0.550,"status":"VERIFY_EXACT_PLATFORM_LINE"},
+    {"rank":8,"pitcher":"Gerrit Cole","line":17.5,"side":"over","p_hit":0.545,"status":"PASS_WORKLOAD_RISK"},
+    {"rank":9,"pitcher":"Andrew Alvarez","line":14.5,"side":"under","p_hit":0.535,"status":"HOLD_WEAK_EDGE"},
+    {"rank":10,"pitcher":"Sandy Alcantara","line":20.5,"side":"under","p_hit":0.520,"status":"PASS_RECENT_FORM_CONFLICT"},
+    {"pitcher":"Walbert Urena","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Gage Jump","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Max Scherzer","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Robert Stock","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Bubba Chandler","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Chase Burns","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Robert Gasser","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Clay Holmes","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Seth Lugo","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Gavin Williams","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Anthony Kay","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Michael King","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Jackson Jobe","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Landen Roupp","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Kyle Freeland","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Kyle Bradish","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Jacob deGrom","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Yoshinobu Yamamoto","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Brandon Pfaadt","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"},
+    {"pitcher":"Griffin Jax","line":null,"side":null,"p_hit":null,"status":"NO_VERIFIED_CURRENT_EXACT_LINE"}
+  ],
+  "pitcher_fantasy": {
+    "status": "NO_VERIFIED_LIVE_PRIZEPICKS_FULL_BOARD",
+    "rule": "No stale lines and no synthetic fantasy probability without exact platform threshold plus platform scoring context.",
+    "rows": [
+      "Chris Sale","Gerrit Cole","Walbert Urena","Sandy Alcantara","Gage Jump","Jake Bennett","Max Scherzer","Aaron Nola","Robert Stock","Bubba Chandler","Chase Burns","Andrew Alvarez","Taj Bradley","Robert Gasser","Clay Holmes","Seth Lugo","Gavin Williams","Anthony Kay","Peter Lambert","Michael King","Jackson Jobe","Landen Roupp","Kyle Freeland","Matthew Liberatore","Kyle Bradish","Jacob deGrom","Yoshinobu Yamamoto","Brandon Pfaadt","Griffin Jax","George Kirby"
+    ]
+  },
+  "top12_retested": [
+    {"rank":1,"pitcher":"Chase Burns","market":"strikeouts","line":5.5,"side":"over","p_hit":0.605,"status":"HOLD_LINEUP_TBD"},
+    {"rank":2,"pitcher":"Michael King","market":"strikeouts","line":5.5,"side":"under","p_hit":0.600,"status":"HOLD_LINEUP_TBD"},
+    {"rank":3,"pitcher":"Matthew Liberatore","market":"outs","line":17.5,"side":"under","p_hit":0.595,"status":"HOLD_LINEUP_TBD"},
+    {"rank":4,"pitcher":"George Kirby","market":"outs","line":17.5,"side":"over","p_hit":0.590,"status":"HOLD_LINEUP_TBD"},
+    {"rank":5,"pitcher":"Jake Bennett","market":"strikeouts","line":4.5,"side":"under","p_hit":0.590,"status":"VERIFY_EXACT_PLATFORM_LINE"},
+    {"rank":6,"pitcher":"Peter Lambert","market":"strikeouts","line":4.5,"side":"over","p_hit":0.585,"status":"HOLD_LINEUP_TBD"},
+    {"rank":7,"pitcher":"Jackson Jobe","market":"strikeouts","line":3.5,"side":"over","p_hit":0.580,"status":"HOLD_RETURN_WORKLOAD"},
+    {"rank":8,"pitcher":"Aaron Nola","market":"outs","line":17.5,"side":"under","p_hit":0.580,"status":"HOLD_WEATHER"},
+    {"rank":9,"pitcher":"Gerrit Cole","market":"strikeouts","line":5.5,"side":"over","p_hit":0.575,"status":"LEAN_CONFIRMED_LINEUP"},
+    {"rank":10,"pitcher":"Kyle Bradish","market":"strikeouts","line":5.5,"side":"under","p_hit":0.575,"status":"HOLD_LINEUP_TBD"},
+    {"rank":11,"pitcher":"Chris Sale","market":"strikeouts","line":6.5,"side":"over","p_hit":0.570,"status":"LEAN_CONFIRMED_LINEUP_LINE_SENSITIVE"},
+    {"rank":12,"pitcher":"Griffin Jax","market":"strikeouts","line":5.5,"side":"under","p_hit":0.565,"status":"HOLD_LINEUP_TBD"}
+  ],
+  "just_outside_top12": [
+    {"pitcher":"Taj Bradley","market":"outs","line":16.5,"side":"over","p_hit":0.565},
+    {"pitcher":"Gavin Williams","market":"strikeouts","line":7.5,"side":"over","p_hit":0.560}
+  ],
+  "anti_stale_rejections": [
+    "Rejected a search result labeling Logan Gilbert as Seattle's 2026-08-08 starter; current slate has George Kirby.",
+    "Rejected a stale Athletics-Red Sox artifact listing Jack Perkins/Payton Tolle for 2026-08-08 after Tolle actually pitched on 2026-08-07.",
+    "Did not transfer probabilities across moved thresholds; Taj Bradley 17.5 outs evidence was superseded by a fresher 16.5 threshold, and Chris Sale 6.5 K was treated separately from 7.5 K chatter."
+  ],
+  "sources": [
+    "https://www.reddit.com/r/sportsbetting/comments/1viwmkf/88_picks_parlays_writeup/",
+    "https://www.reddit.com/r/sportsbook/comments/1vikz41/mlb_props_and_home_run_picks_8826_saturday/",
+    "https://nypost.com/2026/08/08/betting/yankees-vs-braves-prediction-mlb-saturday-odds-picks-props/",
+    "https://www.overthemonster.com/red-sox-analysis/106152/the-red-sox-absurd-13-inning-win-on-thursday-night-might-come-at-an-expensive-cost"
+  ]
+}
