@@ -1,0 +1,51 @@
+{
+  "schema_version": "sportsaid-consensus-audit-v1",
+  "run_id": "2026-08-08T11-09-00-07-00_consensus_verification_correction",
+  "date": "2026-08-08",
+  "as_of": "2026-08-08T11:09:00-07:00",
+  "lane": "LLM_ONLY",
+  "supersedes_for_live_use": "a10c2a6e566aa10b8e1129309c334aba4f19f7a8",
+  "model_shadow_status": "unchanged_SHADOW_NOT_EXECUTED",
+  "audit_policy": {
+    "require_current_matchup_for_line_source": true,
+    "do_not_use_statmuse_prop_card_when_opponent_is_stale": true,
+    "confirmed_lineup_required_for_official": true,
+    "k_under_plus4_batters_faced_veto": true,
+    "one_primary_market_per_pitcher": true,
+    "fantasy_without_fresh_board": "N/A"
+  },
+  "material_corrections": [
+    "Removed Landen Roupp over 4.5 K: source card was tied to MIL, while today's verified opponent is DET.",
+    "Removed Walbert Urena consensus K line sourced from a stale opponent card.",
+    "Removed Michael King 4.5 K consensus claim; same-day market evidence supports 5.5 K for HOU@SD.",
+    "Removed George Kirby K consensus claim because current exact K threshold was not independently verified for TB@SEA.",
+    "Reframed Sale as 6.5-7.5 K book range; 7.5 is independently observed today and 6.5 appears at another same-day book/card.",
+    "Cole current same-day K market is observed at 5.5 at Bet365; 4.5 appears as a lower alternate/book threshold and is not treated as consensus.",
+    "Burns 5.5 K and Williams 7.5 K are corroborated by multiple same-day market posts.",
+    "Bradish U5.5 K and Bennett U4.5 K are not promoted because the +4 batters-faced K-under stress materially weakens them.",
+    "No fantasy-score probability is published without a fresh Aug. 8 board."
+  ],
+  "current_same_day_observed_markets": [
+    {"pitcher":"Chris Sale","market":"K","range":"6.5-7.5","status":"confirmed_lineup","llm_note":"7.5 over lean only; under vetoed by long-leash bullpen context"},
+    {"pitcher":"Gerrit Cole","market":"K","line":5.5,"price":"-120 Bet365 observed","status":"confirmed_lineup","llm_p_side":0.575,"side":"over"},
+    {"pitcher":"Jake Bennett","market":"K","line":4.5,"side":"under","status":"confirmed_lineup_PASS_plus4BF"},
+    {"pitcher":"Jake Bennett","market":"outs","line":17.5,"side":"over","status":"confirmed_lineup_research_only","llm_p_side":0.55},
+    {"pitcher":"Gage Jump","market":"K","line":5.5,"side":"over","status":"confirmed_lineup_PASS","llm_p_side":0.52},
+    {"pitcher":"Sandy Alcantara","market":"K","line":5.5,"side":"under","status":"confirmed_lineup_PASS","llm_p_side":0.545},
+    {"pitcher":"Chase Burns","market":"K","line":5.5,"side":"over","status":"HOLD_expected_lineup_workload","llm_p_side":0.585},
+    {"pitcher":"Gavin Williams","market":"K","line":7.5,"side":"over","status":"HOLD_expected_lineup","llm_p_side":0.595},
+    {"pitcher":"Matthew Liberatore","market":"outs","line":17.5,"side":"under","status":"HOLD_expected_lineup","llm_p_side":0.605},
+    {"pitcher":"Aaron Nola","market":"outs","line":17.5,"side":"under","status":"HOLD_expected_lineup_weather","llm_p_side":0.585},
+    {"pitcher":"Taj Bradley","market":"outs","range":"16.5-17.5","status":"HOLD_expected_lineup_line_sensitive","llm_p_over_16_5":0.59,"llm_p_over_17_5":0.535},
+    {"pitcher":"Peter Lambert","market":"K","line":4.5,"side":"over","status":"HOLD_expected_lineup","llm_p_side":0.595},
+    {"pitcher":"Peter Lambert","market":"outs","line":16.5,"side":"over","status":"HOLD_expected_lineup","llm_p_side":0.565},
+    {"pitcher":"Kyle Bradish","market":"K","line":5.5,"side":"under","status":"PASS_plus4BF"},
+    {"pitcher":"Andrew Alvarez","market":"outs","line":14.5,"side":"under","status":"PASS_projection_conflict"},
+    {"pitcher":"Michael King","market":"K","line":5.5,"side":"under","status":"HOLD_expected_lineup_small_edge","llm_p_side":0.555},
+    {"pitcher":"George Kirby","market":"outs","line":17.5,"side":"over","status":"HOLD_expected_lineup","llm_p_side":0.555},
+    {"pitcher":"Griffin Jax","market":"K","line":5.5,"side":"over","status":"HOLD_expected_lineup_small_edge","llm_p_side":0.53}
+  ],
+  "strict_live_officials_at_audit_time": [],
+  "reason_no_officials": "No observed candidate simultaneously clears the current v4.1 market threshold, exact/current line confidence, and confirmed-lineup/workload gates. Sale/Cole/Bennett/Jump/Alcantara are confirmed but do not clear the strict probability/edge tests at consensus lines; later stronger candidates still have expected lineups.",
+  "fantasy_board": "N/A_no_fresh_Aug8_consensus_board"
+}
