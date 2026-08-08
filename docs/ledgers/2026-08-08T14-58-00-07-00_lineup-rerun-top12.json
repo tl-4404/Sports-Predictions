@@ -1,0 +1,32 @@
+{
+  "snapshot_time": "2026-08-08T14:58:00-07:00",
+  "scope": "remaining actionable MLB slate top 12 after updated lineup confirmations",
+  "live_lane": "LLM_ONLY",
+  "model_shadow_status": "SHADOW_NOT_EXECUTED",
+  "notes": [
+    "Started/locked games excluded from actionable rankings.",
+    "Most remaining lineups are confirmed; Tampa Bay remains expected at snapshot.",
+    "Consensus lines retained only where same-day matchup-matched evidence remains usable.",
+    "K unders continue to receive +4 batters-faced stress.",
+    "Fantasy props excluded from top 12 because no new exact current remaining-slate fantasy thresholds were verified."
+  ],
+  "top12": [
+    {"rank":1,"pitcher":"Matthew Liberatore","market":"outs","line":17.5,"side":"under","p_hit":0.615,"lineup":"confirmed","status":"PLAYABLE_IF_PLATFORM_MATCHES"},
+    {"rank":2,"pitcher":"Aaron Nola","market":"outs","line":17.5,"side":"under","p_hit":0.610,"lineup":"confirmed","status":"LOCKS_IMMINENTLY_IF_STILL_OPEN"},
+    {"rank":3,"pitcher":"Gavin Williams","market":"strikeouts","line":7.5,"side":"over","p_hit":0.605,"lineup":"confirmed","status":"STRONG"},
+    {"rank":4,"pitcher":"Peter Lambert","market":"strikeouts","line":4.5,"side":"over","p_hit":0.605,"lineup":"confirmed","status":"STRONG"},
+    {"rank":5,"pitcher":"Kyle Freeland","market":"outs","line":17.5,"side":"under","p_hit":0.600,"lineup":"confirmed","status":"STRONG"},
+    {"rank":6,"pitcher":"Jackson Jobe","market":"outs","line":13.5,"side":"under","p_hit":0.595,"lineup":"confirmed","status":"RETURN_WORKLOAD"},
+    {"rank":7,"pitcher":"Chase Burns","market":"strikeouts","line":5.5,"side":"over","p_hit":0.590,"lineup":"confirmed","status":"WORKLOAD_HAIRCUT"},
+    {"rank":8,"pitcher":"Michael King","market":"strikeouts","line":5.5,"side":"under","p_hit":0.590,"lineup":"confirmed","status":"MODERATE"},
+    {"rank":9,"pitcher":"Landen Roupp","market":"outs","line":16.5,"side":"under","p_hit":0.585,"lineup":"confirmed","status":"MATCHUP_WEATHER_SUPPORT"},
+    {"rank":10,"pitcher":"Taj Bradley","market":"outs","line":16.5,"side":"over","p_hit":0.585,"lineup":"confirmed","status":"LINE_SENSITIVE"},
+    {"rank":11,"pitcher":"Anthony Kay","market":"strikeouts","line":3.5,"side":"over","p_hit":0.580,"lineup":"confirmed","status":"LOW_THRESHOLD"},
+    {"rank":12,"pitcher":"Yoshinobu Yamamoto","market":"strikeouts","line":5.5,"side":"over","p_hit":0.575,"lineup":"confirmed","status":"SOLID_BUT_FAIR"}
+  ],
+  "just_outside": [
+    {"pitcher":"George Kirby","market":"outs","line":17.5,"side":"over","p_hit":0.570,"lineup":"opponent_expected","reason":"Tampa Bay lineup not confirmed"},
+    {"pitcher":"Jacob deGrom","market":"outs","line":17.5,"side":"over","p_hit":0.570,"lineup":"confirmed","reason":"Baltimore lineup lowers ceiling enough to keep outside top 12"},
+    {"pitcher":"Kyle Bradish","market":"strikeouts","line":5.5,"side":"under","p_hit":0.565,"lineup":"confirmed","reason":"+4 BF stress suppresses K under"}
+  ]
+}
