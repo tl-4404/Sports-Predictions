@@ -22,7 +22,7 @@ def test_saved_policy_installs_recalibrated_audit():
     assert "do NOT see prices" in prompt
 
 
-def test_judge_remains_bounded_market_aware_and_conservative():
+def test_legacy_judge_remains_available_but_is_not_the_live_router():
     import llm_saved_pipeline as policy
 
     prompt = policy.base.JUDGE_SYSTEM
@@ -124,14 +124,20 @@ def test_batx_mode_rejects_unknown_value(monkeypatch):
         policy_flags.batx_mode()
 
 
-def test_chat_runner_applies_external_model_policy():
+def test_chat_runner_applies_external_model_policy_and_grade_guardrail():
     import llm_chat_runner as runner
 
     assert runner.BATX_MODE in {"bootstrap_gate", "advisory", "off"}
     assert runner.policy.BATX_MODE == runner.BATX_MODE
+    prompt = runner.policy.base.PREDICT_SYSTEM
+    assert "THREE-DAY GRADE GUARDRAIL" in prompt
+    assert "K-CONVERSION-STRESS" in prompt
+    assert "OUTS-TAIL-STRESS" in prompt
+    assert "VERDICT: BET" in prompt
+    assert "VERDICT: PASS" in prompt
 
 
-def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
+def test_chat_runner_refreshes_then_promotes_llm_without_shadow_judge(monkeypatch):
     import llm_chat_runner as runner
 
     calls = []
@@ -148,7 +154,12 @@ def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
     monkeypatch.setattr(
         runner.policy.base,
         "judge_stage",
-        lambda game_date=None: calls.append(("judge", game_date)) or 7,
+        lambda game_date=None: pytest.fail("legacy sim/LLM judge must not run live"),
+    )
+    monkeypatch.setattr(
+        runner.live_decision,
+        "promote_llm_live",
+        lambda game_date=None: calls.append(("promote", game_date)) or 7,
     )
 
     result = runner.run_all("2026-07-10")
@@ -157,5 +168,5 @@ def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
     assert calls == [
         ("facts", "2026-07-10"),
         ("predict", "2026-07-10"),
-        ("judge", "2026-07-10"),
+        ("promote", "2026-07-10"),
     ]
