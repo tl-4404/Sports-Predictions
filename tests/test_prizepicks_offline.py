@@ -11,11 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import db
-import data_today
-import prizepicks as pp
+from mlb import db
+from mlb.providers import mlb_api as data_today
+from providers import prizepicks as pp
 
 for _key in ("PRIZEPICKS_LIVE", "ODDS_SOURCE", "ODDS_API_KEY"):
     os.environ.pop(_key, None)

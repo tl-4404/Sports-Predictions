@@ -6,10 +6,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import calibration
-import db
+from mlb import db
+from mlb.training import calibration
 
 FAILURES = []
 

@@ -5,10 +5,10 @@ No network, no pytest:  python tests/test_infra.py
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import netfetch
-import doctor
+from mlb import doctor
+from providers import http as netfetch
 
 FAILURES = []
 

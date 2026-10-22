@@ -6,9 +6,9 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import prizepicks as pp
+from providers import prizepicks as pp
 
 FAILURES = []
 
@@ -32,7 +32,7 @@ except RuntimeError:
 check("missing state code rejected before fetch", missing_state_rejected)
 
 print("pagination and board parsing:")
-original_get_json = pp.netfetch.get_json
+original_get_json = pp.http.get_json
 calls = []
 
 
@@ -75,11 +75,11 @@ def fake_get_json(url, params=None, **kwargs):
     return PAGE_1 if params.get("page") == 1 else PAGE_2
 
 
-pp.netfetch.get_json = fake_get_json
+pp.http.get_json = fake_get_json
 try:
     rows = pp.PrizePicksFetcher(state_code="CA").fetch(DATE)
 finally:
-    pp.netfetch.get_json = original_get_json
+    pp.http.get_json = original_get_json
 
 check("all pages requested", [call.get("page") for call in calls] == [1, 2],
       f"({[call.get('page') for call in calls]})")

@@ -5,14 +5,15 @@ live-ready and which need attention: Python deps, the LLM key, StatsAPI
 reachability, the configured odds source, PrizePicks, and the optional accuracy
 caches. Every check is isolated so one failure can't mask the others.
 
-    python mlb/doctor.py
+    python -m mlb.doctor
     python run_pipeline.py --stage doctor
 
 Exit code is non-zero when any hard FAIL is present (handy in scripts/CI).
 """
 import os
 from datetime import date
-from pathlib import Path
+
+from mlb.paths import CACHE_DIR
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
@@ -38,15 +39,15 @@ def _check_anthropic():
 
 def _check_statsapi():
     try:
-        import data_today
-        games = data_today.get_schedule(date.today().isoformat())
+        from mlb.providers import mlb_api
+        games = mlb_api.get_schedule(date.today().isoformat())
         return OK, f"reachable — {len(games)} games today"
     except Exception as e:
         return FAIL, f"unreachable: {_short(e)} (predict/prizepicks/grade need it)"
 
 
 def _check_odds():
-    import odds_props
+    from mlb.providers import odds
     source = (os.getenv("ODDS_SOURCE") or "").strip().lower() or (
         "oddsapi" if os.getenv("ODDS_API_KEY") else "stub")
     if source in ("stub", "fixture"):
@@ -56,7 +57,7 @@ def _check_odds():
             return FAIL, "ODDS_SOURCE=oddsapi but ODDS_API_KEY unset"
         return WARN, "oddsapi selected + key present (paid plan required for props)"
     try:
-        rows = odds_props.get_fetcher().fetch()
+        rows = odds.get_fetcher().fetch()
         books = sorted({r["book"] for r in rows})
         if not rows:
             return FAIL, "scraper returned 0 rows (verify DK/FD ids; Cloudflare/geo?)"
@@ -66,7 +67,7 @@ def _check_odds():
 
 
 def _check_prizepicks():
-    import prizepicks
+    from providers import prizepicks
     if not os.getenv("PRIZEPICKS_LIVE"):
         return WARN, "PRIZEPICKS_LIVE unset — offline stub (set it for live PrizePicks)"
     try:
@@ -79,12 +80,12 @@ def _check_prizepicks():
 
 
 def _check_caches():
-    base = Path(__file__).resolve().parent / "cache"
+    base = CACHE_DIR
     present = [n for n in ("park_factors.json", "ump_factors.json",
                            "pitcher_form.json") if (base / n).exists()]
     if not present:
         return WARN, ("no park/ump/form caches — simulator runs neutral; build "
-                      "with data_park/data_umpire/data_form for accuracy")
+                      "with mlb.data.park/umpire/form for accuracy")
     return OK, f"present: {', '.join(present)}"
 
 

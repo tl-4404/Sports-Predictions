@@ -7,14 +7,15 @@ For every ungraded prediction on a date:
   * compute CLV: our bet-side fair prob minus the de-vigged consensus at the
     LAST line snapshot before the game — the honest "did we beat the close"
 
-Run: python mlb/grade.py [YYYY-MM-DD]   (defaults to yesterday)
+Run: python -m mlb.grade [YYYY-MM-DD]   (defaults to yesterday)
 """
 import sys
 from datetime import date, timedelta
 
-import db
-import data_today
-from betting_math import american_to_decimal, devig_two_way, consensus_p_over
+from mlb import db
+from mlb.data import game_artifacts
+from mlb.prediction.betting_math import american_to_decimal, consensus_p_over, devig_two_way
+from mlb.providers import mlb_api
 
 
 def _norm(name):
@@ -26,18 +27,29 @@ def grade_date(game_date=None):
     conn = db.connect()
     db.ensure_schema(conn)
     preds = db.ungraded_predictions(conn, game_date)
-    if not preds:
-        print(f"[grade] nothing ungraded for {game_date}")
-        return 0
 
     # actual results, keyed by normalized starter name
     actuals = {}
-    for g in data_today.get_schedule(game_date):
+    for g in mlb_api.get_schedule(game_date):
         try:
-            for pid, res in data_today.get_starter_actuals(g["game_pk"]).items():
+            for pid, res in mlb_api.get_starter_actuals(g["game_pk"]).items():
                 actuals[_norm(res["name"])] = res
         except Exception as e:  # game postponed, boxscore missing, etc.
             print(f"[grade] boxscore {g['game_pk']} failed: {e}")
+        try:
+            artifacts = game_artifacts.fetch_game_artifacts(
+                g["game_pk"], game_date, g["home_team"], g["away_team"]
+            )
+            db.replace_game_artifacts(conn, *artifacts)
+        except Exception as e:
+            # Artifact refresh must not prevent bets from being settled. Missing
+            # games remain eligible for a later idempotent grading rerun.
+            print(f"[grade] artifacts {g['game_pk']} failed: {e}")
+
+    if not preds:
+        print(f"[grade] nothing ungraded for {game_date}; artifacts refreshed")
+        conn.close()
+        return 0
 
     # closing consensus per (player, market, line)
     closing = {}

@@ -8,35 +8,26 @@ A Flask web app (SportsAid) with two prediction pipelines:
 ## Structure
 - `app.py` — Flask app, routes, DB helpers, `load_ev_picks()` (NBA) + `load_mlb_props()` (MLB)
 - `run_pipeline.py` — hosting-agnostic MLB pipeline entrypoint (`--stage odds|predict|grade|all`)
-- `odds_client.py` — fetches NBA moneyline odds from The Odds API, writes to SQLite
+- `nba/providers/odds.py` — fetches NBA moneyline odds from The Odds API, writes to SQLite
+- `providers/` — shared cross-league Polymarket US, PrizePicks, and HTTP clients
 - `sportsaid.db` — SQLite DB (events, prices, users, saved_picks, support_tickets, prop_lines, prop_predictions, prop_results)
 - `mlb/` — all MLB code
   - `db.py` — props schema: append-only line history, predictions, graded results
-  - `betting_math.py` — odds conversion, multiplicative de-vig, fractional Kelly (quarter-Kelly, 2% cap)
-  - `odds_props.py` — prop odds ingestion behind the `ODDS_SOURCE` toggle: `TheOddsAPIPropsFetcher` (paid plan + `ODDS_API_KEY`), `SportsbookScraperFetcher` (free multi-book scraper — `DraftKingsScraper` + `FanDuelScraper`, merged for consensus), or `StubPropsFetcher` (fixtures)
-  - `prizepicks.py` — PrizePicks DFS lane: live/stub fetcher, power-play break-even math, evaluate (P(over) at the PP line off the sim distribution), grade, board; own append-only tables (`prizepicks_lines`/`prizepicks_picks`/`prizepicks_results`)
-  - `netfetch.py` — resilient HTTP for the scrapers: browser-like session, optional `cloudscraper` (Cloudflare), retries with backoff
   - `doctor.py` — preflight readiness check (`python run_pipeline.py --stage doctor`): deps, LLM key, StatsAPI, odds source, PrizePicks, accuracy caches
-  - `data_today.py` — serving-time data from the free MLB StatsAPI: schedule/probables/lineups, pitcher & batter per-PA rates (shrunk toward league average), box scores for grading
-  - `simulator.py` — PA-level Monte Carlo: odds-ratio (log5) matchups, park/ump/form K factors, pitch-count leash, DP-aware outs tracking
-  - `factors.py` — serving-side park & umpire K-factor lookups (read JSON caches, fall back to 1.0); holds `TEAM_ABBR` (full name → abbrev)
-  - `form.py` — serving-side pitcher stuff/form: CSW%-blended K rate + velocity-trend K factor (reads `cache/pitcher_form.json`, neutral when absent)
-  - `data_umpire.py` — training-side builder for `cache/ump_factors.json` (shrunk K/PA ratio per home-plate umpire); serving lookup is `data_today.get_home_plate_umpire`
-  - `data_form.py` — training-side builder for `cache/pitcher_form.json` (CSW%, CSW→K regression, fastball velo baseline vs recent); heavyweight Statcast
-  - `backtest.py` — replay the simulator over historical starts: calibration/log-loss/Brier, plus ROI/CLV when odds are present. `--synthetic` self-consistency validation; `--odds <archive.csv|json>` merges historical prop odds (`load_odds_archive`/`merge_odds`)
-  - `build_backtest_data.py` — training-side: assemble a real backtest dataset from StatsAPI using prior-season rates (no leakage)
-  - `predict.py` — glue: slate → rates → sim (with park+ump K factors) → P(over) vs posted lines → edge/bet side/Kelly → `prop_predictions`
-  - `llm.py` — Claude lanes: `facts` (web search, qualitative only), `predict` (independent Claude P(over) per line; sees the line, never the price or the sim output), `judge` (blend sim+llm, clamped to blend ± `JUDGE_BAND`, may veto bets). Rows share the sim run_id, sources `llm`/`judge`
   - `grade.py` — next-day grading vs box scores: outcome, PnL, CLV vs closing consensus — reported per lane (sim vs llm vs judge)
-  - `build_training.py`, `data_pitcher.py`, `data_lineup.py`, `data_park.py`, `data_weather.py`, `model.py` — training-side (statcast/pybaseball; heavyweight, never imported at serving time)
+  - `data/` — historical dataset assembly and heavyweight cache builders (`build_training`, backtest data, pitcher/lineup/park/weather/umpire/form features)
+  - `training/` — PyTorch fitting, chronological calibration, and simulator backtesting
+  - `prediction/` — PA simulator, betting math, context-factor lookups, daily prediction orchestration, and independent LLM/judge lanes
   - `fixtures/` — shipped stub prop lines; `cache/` (gitignored) — training data, park factors, custom stub lines
 - `tests/test_pipeline_offline.py` — no-network end-to-end test: `python tests/test_pipeline_offline.py`
+- `mlb/providers/` — MLB StatsAPI and MLB sportsbook odds
+- `nba/providers/` — NBA Stats, NBA sportsbook odds, and ESPN NBA injuries
 - `nba/` — all NBA model code
-  - `build_training.py` — fetches historical game data from NBA API, builds training CSVs
-  - `model.py` — trains the PyTorch model, saves to `nba/models/`
-  - `data_today.py` — fetches today's team stats from NBA API
-  - `predict.py` — runs model on today's games, writes `current_games_with_probs.csv`
-  - `data_injuries.py` — ESPN injury fetcher, filters to top-50 players by PPG
+  - `data/` — historical training and chronological backtest dataset builders
+  - `training/model.py` — trains the PyTorch model, saves to `nba/models/`
+  - `prediction/features.py` — assembles daily game/team features via shared providers
+  - `prediction/daily.py` — NN predictions and injury flags, writes `current_games_with_probs.csv`
+  - Injury provider is at `nba/providers/espn.py`
   - `cache/` — cached team snapshots and training data
   - `models/` — saved model weights, scaler, feature columns
 - `templates/` — Jinja2 HTML templates
@@ -54,8 +45,8 @@ A Flask web app (SportsAid) with two prediction pipelines:
 5. `python app.py` — Flask dev server; home page shows sportsbook props (judge>llm>sim per prop) and the PrizePicks best-lines board
 
 ## Daily workflow (NBA)
-1. `python odds_client.py` — refresh odds in DB
-2. `python nba/predict.py` — predictions + injury flags
+1. `python -m nba.providers.odds` — refresh odds in DB
+2. `python -m nba.prediction.daily` — predictions + injury flags
 3. `python app.py` — Flask dev server
 
 ## Environment (.env)
@@ -68,14 +59,14 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - `ADMIN_EMAILS` — comma-separated emails allowed to view `/admin/tickets`
 
 ## Key conventions
-- Model paths use `BASE_DIR = os.path.dirname(os.path.abspath(__file__))` for portability
-- Serving-time MLB code (`data_today.py`, `simulator.py`, `predict.py`, `grade.py`) must not import pybaseball/statcast/torch — those are training-only
+- Shared paths come from `mlb.paths`; moving a module must not change its cache, fixture, model, or database location
+- Serving-time MLB code (`providers/`, `prediction/`, `grade.py`) must not import pybaseball/statcast/torch — those are training-only
 - Prop tables are append-only; never UPDATE or DELETE line snapshots (CLV grading depends on history)
 - Edges are always computed against the de-vigged multi-book consensus, never a single book's vig-included price; minimum edge to flag a bet is `MIN_EDGE` (3%)
-- Team name mismatches between NBA API and Odds API are handled via `TEAM_NAME_FIXES` in `app.py`; MLB full-name → abbreviation mapping is `TEAM_ABBR` in `mlb/factors.py`
-- Park, umpire, and pitcher-form K factors are read from `mlb/cache/*.json` via `mlb/factors.py` and `mlb/form.py`, always falling back to 1.0 / no-op (neutral) — build them with `data_park.build_park_factors()`, `data_umpire.build_ump_factors()`, and `data_form.build_pitcher_form()` (heavyweight, run per season/weekly)
+- Team name mismatches between NBA API and Odds API are handled via `TEAM_NAME_FIXES` in `app.py`; MLB full-name → abbreviation mapping is `TEAM_ABBR` in `mlb/prediction/factors.py`
+- Park, umpire, and pitcher-form K factors are read from `mlb/cache/*.json` via `mlb/prediction/factors.py` and `mlb/prediction/form.py`, always falling back to 1.0 / no-op (neutral) — build them with the modules under `mlb/data/` (heavyweight, run per season/weekly)
 - The simulator scales K odds by `k_park * k_ump * k_form`; the pitcher K rate is CSW-blended (`form.blended_k_rate`) before simulating — all four collapse to neutral when their cache is missing, so serving never hard-fails
-- Before trusting the simulator with real money, run `python mlb/backtest.py <dataset> [--odds archive.csv]` — the model must be calibrated (low ECE) and, with odds merged, show positive ROI and CLV
+- Before trusting the simulator with real money, run `python -m mlb.training.backtest <dataset> [--odds archive.csv]` — the model must be calibrated (low ECE) and, with odds merged, show positive ROI and CLV
 - Injury flags only apply to top-50 players by PPG (configurable via `get_top_players(n=50)`)
 - Suppressed picks (Out/Doubtful star) are shown dimmed with red badge; warned picks (Questionable/Day-To-Day) show orange badge
 

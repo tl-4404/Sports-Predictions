@@ -52,7 +52,20 @@ web: $(VENV)                           ## Flask dev server (the board at :5000)
 
 .PHONY: backtest
 backtest: $(VENV)                      ## synthetic calibration + flat-market ROI check
-	$(PY) mlb/backtest.py --synthetic --flat-market
+	$(PY) -m mlb.training.backtest --synthetic --flat-market
+
+.PHONY: backtest-real
+backtest-real: $(VENV)                 ## run real dataset: make backtest-real DATA=... SIMS=10000
+	@test -n "$(DATA)" || (echo "DATA=path/to/backtest.json is required" && exit 2)
+	$(PY) -m mlb.training.backtest $(DATA) --sims $(or $(SIMS),10000)
+
+.PHONY: backtest-data
+backtest-data: $(VENV)                 ## build data: make backtest-data START=... END=... WARMUP=... OUT=...
+	@test -n "$(START)" || (echo "START=YYYY-MM-DD is required" && exit 2)
+	@test -n "$(END)" || (echo "END=YYYY-MM-DD is required" && exit 2)
+	@test -n "$(WARMUP)" || (echo "WARMUP=YYYY-MM-DD is required" && exit 2)
+	$(PY) -m mlb.data.build_backtest_data $(START) $(END) \
+		--warmup-start $(WARMUP) --out $(or $(OUT),mlb/cache/backtest.json)
 
 .PHONY: test
 test: $(VENV)                          ## run all offline test suites (no network)

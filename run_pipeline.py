@@ -25,9 +25,6 @@ import argparse
 import os
 import sys
 from datetime import date, timedelta
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / "mlb"))
 
 STAGES = ("odds", "predict", "llm", "prizepicks", "grade", "calibrate", "doctor", "all")
 
@@ -40,7 +37,7 @@ def main():
     args = ap.parse_args()
 
     if args.stage == "doctor":
-        import doctor
+        from mlb import doctor
         results = doctor.run()
         print(doctor.report(results))
         sys.exit(1 if any(s == doctor.FAIL for _, s, _ in results) else 0)
@@ -48,41 +45,49 @@ def main():
     failures = []
 
     if args.stage in ("odds", "all"):
-        _run("odds", failures, lambda: __import__("odds_props").refresh(args.date))
+        from mlb.providers import odds
+        _run("odds", failures, lambda: odds.refresh(args.date))
 
     if args.stage in ("predict", "all"):
+        from mlb.prediction import daily
         _run("predict", failures,
-             lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
+             lambda: daily.predict_date(args.date, n_sims=args.sims))
 
     if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
+        from mlb.prediction import llm_chat_runner
         # This runner installs the preserved chat policy and appends a fresh research
         # snapshot on every invocation. The simulator remains fully independent.
         _run("llm", failures,
-             lambda: __import__("llm_chat_runner").run_all(args.date))
+             lambda: llm_chat_runner.run_all(args.date))
     elif args.stage == "all":
         print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
     if args.stage in ("prizepicks", "all"):
+        from providers import prizepicks
         _run("prizepicks", failures,
-             lambda: __import__("prizepicks").run_all(args.date))
+             lambda: prizepicks.run_all(args.date))
 
     if args.stage in ("grade", "all"):
+        from mlb import grade
+        from providers import prizepicks
+        from mlb.training import calibration
         grade_date = args.date if args.stage == "grade" else (
             (date.today() - timedelta(days=1)).isoformat())
         _run("grade", failures,
-             lambda: __import__("grade").grade_date(grade_date))
+             lambda: grade.grade_date(grade_date))
         _run("prizepicks-grade", failures,
-             lambda: __import__("prizepicks").grade_date(grade_date))
+             lambda: prizepicks.grade_date(grade_date))
         # Calibration is intentionally fitted only after grading and only through
         # the graded date, preventing future leakage into historical predictions.
         _run("calibrate", failures,
-             lambda: __import__("calibration").fit(grade_date))
+             lambda: calibration.fit(grade_date))
 
     if args.stage == "calibrate":
+        from mlb.training import calibration
         _run("calibrate", failures,
-             lambda: __import__("calibration").fit(args.date))
+             lambda: calibration.fit(args.date))
         if not failures:
-            print(__import__("calibration").report(args.date))
+            print(calibration.report(args.date))
 
     if failures:
         print(f"[pipeline] FAILED stages: {', '.join(failures)}")

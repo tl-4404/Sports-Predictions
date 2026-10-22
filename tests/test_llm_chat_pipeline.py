@@ -5,13 +5,12 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MLB = ROOT / "mlb"
-if str(MLB) not in sys.path:
-    sys.path.insert(0, str(MLB))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def test_saved_policy_installs_recalibrated_audit():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     assert policy.PIPELINE_VERSION == "chat-preserved-v4.0"
     prompt = policy.base.PREDICT_SYSTEM
@@ -23,7 +22,7 @@ def test_saved_policy_installs_recalibrated_audit():
 
 
 def test_judge_remains_bounded_market_aware_and_conservative():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     prompt = policy.base.JUDGE_SYSTEM
     assert "de-vigged market" in prompt
@@ -35,7 +34,7 @@ def test_judge_remains_bounded_market_aware_and_conservative():
 
 
 def test_probability_cap_applies_to_either_side():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     assert policy._cap_side_probability(0.80) == 0.64
     assert policy._cap_side_probability(0.20) == 0.36
@@ -43,7 +42,7 @@ def test_probability_cap_applies_to_either_side():
 
 
 def test_dynamic_edge_thresholds_are_market_specific():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     assert policy._required_edge("pitcher_strikeouts", "under") == 0.06
     assert policy._required_edge("pitcher_strikeouts", "over") == 0.06
@@ -53,7 +52,7 @@ def test_dynamic_edge_thresholds_are_market_specific():
 
 
 def test_only_strongest_eligible_market_becomes_primary():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     records = [
         {
@@ -80,7 +79,7 @@ def test_only_strongest_eligible_market_becomes_primary():
 
 
 def test_no_primary_when_edges_do_not_clear_v4_hurdles():
-    import llm_saved_pipeline as policy
+    from mlb.prediction import llm_saved_pipeline as policy
 
     records = [
         {
@@ -101,14 +100,14 @@ def test_no_primary_when_edges_do_not_clear_v4_hurdles():
 
 
 def test_batx_mode_defaults_to_bootstrap_gate(monkeypatch):
-    import policy_flags
+    from mlb.prediction import policy_flags
 
     monkeypatch.delenv(policy_flags.BATX_MODE_ENV, raising=False)
     assert policy_flags.batx_mode() == "bootstrap_gate"
 
 
 def test_batx_mode_supports_advisory_and_off(monkeypatch):
-    import policy_flags
+    from mlb.prediction import policy_flags
 
     monkeypatch.setenv(policy_flags.BATX_MODE_ENV, "advisory")
     assert policy_flags.batx_mode() == "advisory"
@@ -117,7 +116,7 @@ def test_batx_mode_supports_advisory_and_off(monkeypatch):
 
 
 def test_batx_mode_rejects_unknown_value(monkeypatch):
-    import policy_flags
+    from mlb.prediction import policy_flags
 
     monkeypatch.setenv(policy_flags.BATX_MODE_ENV, "primary_model")
     with pytest.raises(ValueError):
@@ -125,14 +124,14 @@ def test_batx_mode_rejects_unknown_value(monkeypatch):
 
 
 def test_chat_runner_applies_external_model_policy():
-    import llm_chat_runner as runner
+    from mlb.prediction import llm_chat_runner as runner
 
     assert runner.BATX_MODE in {"bootstrap_gate", "advisory", "off"}
     assert runner.policy.BATX_MODE == runner.BATX_MODE
 
 
 def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
-    import llm_chat_runner as runner
+    from mlb.prediction import llm_chat_runner as runner
 
     calls = []
     monkeypatch.setattr(

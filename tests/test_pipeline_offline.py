@@ -10,18 +10,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mlb"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 
-import db
-import data_today
-import grade
-import odds_props
-import predict
-import simulator
-from betting_math import (american_to_prob, consensus_p_over, devig_two_way,
-                          kelly_fraction)
+from mlb import db, grade
+from mlb.prediction import daily as predict
+from mlb.prediction import simulator
+from mlb.prediction.betting_math import (
+    american_to_prob,
+    consensus_p_over,
+    devig_two_way,
+    kelly_fraction,
+)
+from mlb.providers import mlb_api as data_today
+from mlb.providers import odds as odds_props
 
 FAILURES = []
 
@@ -79,7 +82,7 @@ check("low-K umpire lowers K mean", ks_cold.mean() < ks.mean() - 0.2,
 # ── factors: park + umpire cache lookup ──────────────────────────────────────
 print("factors:")
 import json as _json0
-import factors as factors_mod
+from mlb.prediction import factors as factors_mod
 _fc_dir = Path(tempfile.mkdtemp())
 factors_mod.UMP_PATH = _fc_dir / "ump_factors.json"
 factors_mod.PARK_PATH = _fc_dir / "park_factors.json"
@@ -159,6 +162,7 @@ def fake_actuals(game_pk):
     }
 
 data_today.get_starter_actuals = fake_actuals
+grade.game_artifacts.fetch_game_artifacts = lambda *args: ([], [], [], [])
 n_graded = grade.grade_date("2026-07-01")
 check("all predictions graded", n_graded == len(preds), f"({n_graded})")
 
@@ -181,7 +185,7 @@ check("innings_to_outs 7.0 = 21", data_today.innings_to_outs("7.0") == 21)
 # ── LLM lanes with a fake Anthropic client ───────────────────────────────────
 print("llm lanes (fake client):")
 import json as _json
-import llm
+from mlb.prediction import llm
 
 
 class FakeBlock:
@@ -304,7 +308,7 @@ conn.close()
 
 # ── form: CSW-blended K rate + velocity trend factor ─────────────────────────
 print("form:")
-import form as form_mod
+from mlb.prediction import form as form_mod
 _form_dir = Path(tempfile.mkdtemp())
 form_mod.FORM_PATH = _form_dir / "pitcher_form.json"
 with open(form_mod.FORM_PATH, "w") as f:
@@ -335,7 +339,7 @@ check("simulator k_form direction",
 
 # ── backtest engine (synthetic self-consistency) ─────────────────────────────
 print("backtest:")
-import backtest
+from mlb.training import backtest
 
 data = backtest.synthetic_dataset(n_games=140, seed=3)
 records = backtest.run_backtest(data, n_sims=800, seed=0)

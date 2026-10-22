@@ -13,7 +13,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "mlb"))
 
 FAILURES = []
 
@@ -30,7 +29,7 @@ appmod.DB_PATH = tmp / "app.db"
 app = appmod.app
 app.config["TESTING"] = True
 
-import db as propdb
+from mlb import db as propdb
 propdb.DB_PATH = tmp / "app.db"
 
 today = date.today().isoformat()

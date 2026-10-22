@@ -5,4 +5,5 @@
 torch
 scikit-learn
 joblib
+nba_api
 pybaseball

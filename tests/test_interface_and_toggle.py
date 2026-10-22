@@ -9,11 +9,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "mlb"))
 sys.path.insert(0, str(ROOT))
 
-import db
-import odds_props
+from mlb import db
+from mlb.providers import odds as odds_props
 import app as webapp
 
 FAILURES = []
@@ -190,7 +189,7 @@ check("SCRAPE_BOOKS overrides book set",
       [s.BOOK for s in odds_props.SportsbookScraperFetcher(books="fanduel").scrapers]
       == ["FanDuel"])
 # two books on the same prop de-vig to a blended consensus between them
-from betting_math import consensus_p_over, devig_two_way
+from mlb.prediction.betting_math import consensus_p_over, devig_two_way
 p_dk, _ = devig_two_way(k["over_odds"], k["under_odds"])       # -115/-105
 p_fd, _ = devig_two_way(fk["over_odds"], fk["under_odds"])     # -120/+100
 cons = consensus_p_over([(k["over_odds"], k["under_odds"]),
@@ -209,7 +208,7 @@ check("missing table -> empty board",
       webapp.load_prizepicks_board(conn, "2026-07-03") == [])
 
 # seed prizepicks_picks directly
-import prizepicks as pp
+from providers import prizepicks as pp
 pp.ensure_schema(conn)
 seed = [
     ("r1", "Ace Example", "pitcher_strikeouts", 6.5, 0.68, "more", 0.68, 0.577, 0.103, 1),
