@@ -262,8 +262,8 @@ def load_mlb_props(db, game_date=None, bets_only=False):
     sim_means = {}
     lane_probs = {}   # key -> {source: p_over} for the three-way comparison
     for r in rows:
-        key = (r["player_name"], r["market"], r["line"])
-        lane_probs.setdefault(key, {})[r["source"]] = r["p_over"]
+        key = (r["game_pk"], r["player_id"], r["market"], r["line"])
+        lane_probs.setdefault(key, {"sim": None, "llm": None, "judge": None})[r["source"]] = r["p_over"]
         if r["source"] == "sim" and r["mean"] is not None:
             sim_means[key] = r["mean"]
         cur = best.get(key)
@@ -272,9 +272,18 @@ def load_mlb_props(db, game_date=None, bets_only=False):
 
     props = []
     for key, r in best.items():
-        if bets_only and not r["bet_side"]:
-            continue
         d = dict(r)
+        from mlb.integrity import publication_reasons
+        reasons = publication_reasons(d)
+        # Only the final decision lane can publish; raw LLM probabilities and
+        # shadow forecasts cannot inherit permission from a missing judge row.
+        if r["source"] != "judge":
+            reasons.append("not_final_decision")
+        if reasons:
+            d["bet_side"], d["kelly_frac"] = None, 0.0
+            d["eligibility_reason"] = ";".join(reasons)
+        if bets_only and not d["bet_side"]:
+            continue
         d["market_label"] = "Strikeouts" if r["market"] == "pitcher_strikeouts" else "Pitcher Outs"
         d["edge"] = max(r["edge_over"] or 0, r["edge_under"] or 0) if r["edge_over"] is not None else None
         d["lane"] = r["source"]                       # which lane made the call
@@ -298,6 +307,8 @@ def load_mlb_props(db, game_date=None, bets_only=False):
 # off the simulator distribution vs the parlay break-even. Kept apart from the
 # sportsbook board above so the two are never conflated.
 def load_prizepicks_board(db, game_date=None, playable_only=False):
+    if playable_only:
+        return []  # no verified entry ledger exists yet
     game_date = game_date or date.today().isoformat()
     try:
         run = db.execute(
@@ -321,6 +332,7 @@ def load_prizepicks_board(db, game_date=None, playable_only=False):
         d = dict(r)
         d["market_label"] = ("Strikeouts" if r["market"] == "pitcher_strikeouts"
                              else "Pitcher Outs")
+        d["edge"], d["breakeven"], d["playable"] = None, None, False
         picks.append(d)
     return picks
 
@@ -332,18 +344,27 @@ def load_lane_scoreboard(db, days=14):
     since = (date.today() - timedelta(days=days)).isoformat()
     try:
         rows = db.execute(
-            """SELECT p.source,
+            """WITH ranked AS (
+                 SELECT p.*, ROW_NUMBER() OVER (
+                   PARTITION BY p.game_date, p.game_pk, p.player_id, p.source
+                   ORDER BY CASE WHEN p.bet_side IS NOT NULL THEN 0 ELSE 1 END,
+                            julianday(p.created_at), p.id) AS decision_rank
+                 FROM prop_predictions p
+                 WHERE p.game_date >= ? AND p.model_version='mlb-audit-v5'
+                   AND julianday(p.created_at) < julianday(p.game_start_time)
+               ) SELECT p.source,
                       COUNT(*)                                    AS graded,
-                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN 1 ELSE 0 END) AS bets,
+                      SUM(CASE WHEN r.bet_won IS NOT NULL THEN 1 ELSE 0 END) AS bets,
                       SUM(COALESCE(r.bet_won, 0))                 AS wins,
                       SUM(COALESCE(r.profit_units, 0))            AS pnl,
-                      SUM(CASE WHEN p.bet_side IS NOT NULL THEN COALESCE(p.kelly_frac,0) ELSE 0 END) AS staked,
+                      SUM(CASE WHEN p.bet_side IS NOT NULL AND r.outcome != 'void'
+                               THEN COALESCE(p.kelly_frac,0) ELSE 0 END) AS staked,
                       AVG(r.clv)                                  AS avg_clv,
                       AVG(CASE WHEN r.clv IS NOT NULL AND r.clv > 0 THEN 1.0
                                WHEN r.clv IS NOT NULL THEN 0.0 END) AS clv_beat_rate
-               FROM prop_predictions p
+               FROM ranked p
                JOIN prop_results r ON r.prediction_id = p.id
-               WHERE p.game_date >= ?
+               WHERE p.decision_rank=1
                GROUP BY p.source""",
             (since,),
         ).fetchall()
@@ -370,20 +391,20 @@ def load_lane_scoreboard(db, days=14):
     return board
 
 
-# PrizePicks has no two-way price, Kelly stake, or closing line, so it can't
-# share the query above. We score its playable picks against the SAME parlay
-# break-even they were selected on: treat each leg as a flat 1u bet at the
-# break-even's fair decimal odds (1/breakeven). ROI then reads as ">0 iff the
-# lane's realized win rate beat its break-even" — an honest, comparable number.
-# CLV is N/A (no market close) and shows as "—".
+# A leg is not an entry. Actual payout, stake, partners and push rules are
+# required to compute pick'em ROI; standalone leg accuracy is diagnostic only.
 def _prizepicks_lane_row(db, since):
     try:
         rows = db.execute(
-            """SELECT p.breakeven, r.pick_won
-               FROM prizepicks_picks p
+            """WITH ranked AS (
+                 SELECT p.*, ROW_NUMBER() OVER (
+                   PARTITION BY p.game_date, p.game_pk, p.player_id, p.market
+                   ORDER BY p.created_at, p.id) AS decision_rank
+                 FROM prizepicks_picks p WHERE p.game_date >= ? AND p.playable=1
+               ) SELECT r.pick_won
+               FROM ranked p
                JOIN prizepicks_results r ON r.pick_id = p.id
-               WHERE p.game_date >= ? AND p.playable = 1
-                 AND r.pick_won IS NOT NULL""",
+               WHERE p.decision_rank=1 AND r.pick_won IS NOT NULL""",
             (since,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -392,15 +413,13 @@ def _prizepicks_lane_row(db, since):
         return None
     n = len(rows)
     wins = sum(r["pick_won"] for r in rows)
-    pnl = sum((1.0 / r["breakeven"] - 1.0) if r["pick_won"] else -1.0
-              for r in rows)
     return {
         "source": "prizepicks",
         "bets": n,
         "wins": wins,
         "hit_rate": wins / n,
-        "pnl": pnl,
-        "roi": pnl / n,          # flat 1u per leg
+        "pnl": None,
+        "roi": None,
         "avg_clv": None,         # no two-way market / closing line
         "clv_beat_rate": None,
     }

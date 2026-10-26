@@ -1,6 +1,6 @@
 """Plate-appearance-level Monte Carlo simulator for starting pitcher props.
 
-The Bat-X-style core: instead of regressing to a point estimate, simulate the
+A simplified log5 core (not THE BAT or THE BAT X): simulate the
 game one plate appearance at a time and read P(over line) straight off the
 resulting distribution of strikeouts and outs.
 
@@ -16,8 +16,7 @@ erase extra outs — that fattens the high tail of the outs distribution the
 way real games do.
 
 Known v1 simplifications (documented on purpose):
-  * no runs scored → no performance-based early hook (leash is pitch count
-    + a soft cap after the lineup turns over a 3rd time doing badly)
+  * no runs scored, performance-based hook or learned times-through-order effect
   * errors/ROE folded into HIT; sacrifice outs folded into OUT_IN_PLAY
 """
 import numpy as np
@@ -69,18 +68,22 @@ def build_matchup_probs(pitcher, lineup, k_park=1.0, k_ump=1.0, k_form=1.0):
     return probs
 
 
-def sample_pitch_limit(recent_pitch_counts, rng):
+def sample_pitch_limit(recent_pitch_counts, rng, pitch_cap=None):
     """Leash: pitch limit drawn from recent starts (with noise), clamped."""
     if recent_pitch_counts:
         mean = float(np.mean(recent_pitch_counts))
         sd = max(float(np.std(recent_pitch_counts)), 6.0)
     else:
         mean, sd = 88.0, 10.0
-    return float(np.clip(rng.normal(mean, sd), 55.0, 118.0))
+    if pitch_cap is not None and not 1 <= pitch_cap <= 150:
+        raise ValueError("pitch_cap must be between 1 and 150")
+    return float(np.clip(rng.normal(mean, sd), 1.0,
+                         min(118.0, pitch_cap) if pitch_cap else 118.0))
 
 
 def simulate_starter(pitcher, lineup, recent_pitch_counts=None,
-                     k_park=1.0, k_ump=1.0, k_form=1.0, n_sims=10000, seed=None):
+                     k_park=1.0, k_ump=1.0, k_form=1.0, n_sims=10000, seed=None,
+                     pitch_cap=None):
     """Simulate n games; return (ks, outs) integer arrays of length n_sims."""
     rng = np.random.default_rng(seed)
     probs = build_matchup_probs(pitcher, lineup, k_park, k_ump, k_form)
@@ -91,7 +94,7 @@ def simulate_starter(pitcher, lineup, recent_pitch_counts=None,
     outs_out = np.zeros(n_sims, dtype=np.int64)
 
     for s in range(n_sims):
-        pitch_limit = sample_pitch_limit(recent_pitch_counts, rng)
+        pitch_limit = sample_pitch_limit(recent_pitch_counts, rng, pitch_cap)
         ks = outs = 0
         pitches = 0.0
         batter_idx = 0
@@ -156,6 +159,25 @@ def prob_over(samples, line):
     if over + under > 0:  # condition on no-push, matches how books grade
         return over / (over + under), under / (over + under), push
     return 0.5, 0.5, push
+
+
+def extra_batters_k_probability(samples, line, k_probability, extra_batters=4):
+    """Exact convolution for a longer-outing K-under sensitivity test.
+
+    The caller supplies a conservative next-batter K rate. This is a stress
+    scenario, not an estimated probability of the manager allowing more BF.
+    Returns the no-push P(over) after the extra batters, without MC noise.
+    """
+    from math import comb
+    if not 0 <= k_probability <= 1 or extra_batters < 0:
+        raise ValueError("invalid extra-batter scenario")
+    over = under = 0.0
+    for extra_k in range(extra_batters + 1):
+        weight = (comb(extra_batters, extra_k) * k_probability ** extra_k
+                  * (1 - k_probability) ** (extra_batters - extra_k))
+        over += weight * float(np.mean(np.asarray(samples) + extra_k > line))
+        under += weight * float(np.mean(np.asarray(samples) + extra_k < line))
+    return over / (over + under) if over + under else 0.5
 
 
 def summarize(samples):

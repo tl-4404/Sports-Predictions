@@ -47,9 +47,18 @@ def refresh_facts(game_date=None) -> int:
     return inserted
 
 
-def run_all(game_date=None):
+def run_all(game_date=None, refresh_inputs=True):
     """Fresh chat-standard research -> independent prediction -> bounded judge."""
     print(f"[llm.chat] external model mode: BAT X={BATX_MODE}")
+    if refresh_inputs:
+        import odds_props
+        import predict
+        if odds_props.refresh(game_date) <= 0:
+            print("[llm.chat] no refreshed prices; publication aborted")
+            return 0
+        if predict.predict_date(game_date) <= 0:
+            print("[llm.chat] no fresh shadow forecasts; publication aborted")
+            return 0
     refresh_facts(game_date)
     policy.base.llm_predict_stage(game_date)
     return policy.base.judge_stage(game_date)

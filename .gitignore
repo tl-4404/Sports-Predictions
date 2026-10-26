@@ -9,3 +9,4 @@ nba/models/
 nba/__pycache__/.DS_Store
 __pycache__/
 tests/__pycache__/
+audit_artifacts/

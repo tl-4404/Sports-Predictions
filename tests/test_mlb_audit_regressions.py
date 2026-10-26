@@ -83,6 +83,8 @@ prediction_base = {
     "bet_side": "over",
     "kelly_frac": 0.01,
     "rationale": None,
+    "raw_p_over": 0.70, "model_version": "mlb-audit-v5",
+    "game_start_time": "2026-07-20T19:00:00+00:00", "price_verified": 1,
 }
 old_id = db.insert_prediction(conn, {
     **prediction_base,
@@ -94,6 +96,7 @@ new_id = db.insert_prediction(conn, {
     "run_id": "run-2",
     "created_at": "2026-07-20T16:10:00+00:00",
     "p_over": 0.60,
+    "raw_p_over": 0.60,
 })
 synthetic_id = db.insert_prediction(conn, {
     **prediction_base,
@@ -122,7 +125,7 @@ for prediction_id in (old_id, new_id, synthetic_id):
 conn.commit()
 eligible = list(calibration._eligible_rows(conn, "2026-07-20"))
 check("repeated reruns count once", len(eligible) == 1, f"(n={len(eligible)})")
-check("latest rerun retained", eligible and abs(eligible[0]["p_over"] - 0.60) < 1e-9)
+check("first pregame forecast retained", eligible and abs(eligible[0]["p_over"] - 0.70) < 1e-9)
 check("synthetic no-market row excluded",
       all(row["market_p_over"] is not None for row in eligible))
 

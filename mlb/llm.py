@@ -270,9 +270,9 @@ def llm_predict_stage(game_date=None, run_id=None):
     n = 0
     for g in data_today.get_schedule(game_date):
         facts = _facts_for(conn, game_date, g["game_pk"])
-        k_park = park_k_factor(g["home_team"])
+        k_park = park_k_factor(g["home_team"], as_of_date=game_date)
         ump_name = data_today.get_home_plate_umpire(g["game_pk"])
-        k_ump = ump_k_factor(ump_name)
+        k_ump = ump_k_factor(ump_name, as_of_date=game_date)
         for side in ("home", "away"):
             pitcher = g[f"{side}_pitcher"]
             if not pitcher:
@@ -294,10 +294,10 @@ def llm_predict_stage(game_date=None, run_id=None):
 
 def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
                          line_rows, flags, k_park, k_ump, ump_name):
-    profile = data_today.get_pitcher_profile(pitcher["id"])
+    profile = data_today.get_pitcher_profile(pitcher["id"], as_of_date=game_date)
     opp_ids = game["away_lineup"] if side == "home" else game["home_lineup"]
-    if opp_ids:
-        lineup_ks = [round(data_today.get_batter_rates(b, pitcher["hand"])["k"], 3)
+    if len(opp_ids) == 9 and len(set(opp_ids)) == 9:
+        lineup_ks = [round(data_today.get_batter_rates(b, pitcher["hand"], as_of_date=game_date)["k"], 3)
                      for b in opp_ids[:9]]
         lineup_status = "confirmed lineup"
     else:
@@ -311,7 +311,7 @@ def _llm_predict_pitcher(conn, client, run_id, game_date, game, side, pitcher,
     prompt = PREDICT_PROMPT.format(
         game_date=game_date, pitcher=pitcher["name"], hand=pitcher["hand"],
         team_side=side, pk=profile["k"], pbb=profile["bb"], phit=profile["hit"],
-        form_summary=form.form_summary(pitcher["id"]) or "n/a",
+        form_summary=form.form_summary(pitcher["id"], as_of_date=game_date) or "n/a",
         pitch_counts=profile["recent_pitch_counts"] or "unknown",
         lineup_ks=lineup_ks, k_park=k_park, k_ump=k_ump,
         ump_name=ump_name or "TBD", lineup_status=lineup_status,
@@ -430,7 +430,7 @@ def judge_stage(game_date=None, run_id=None):
     # group per pitcher → per (market, line) with both lanes
     by_pitcher = {}
     for r in rows:
-        by_pitcher.setdefault(r["player_name"], {}) \
+        by_pitcher.setdefault((r["game_pk"], r["player_id"], r["player_name"]), {}) \
                   .setdefault((r["market"], r["line"]), {})[r["source"]] = r
 
     lines_by_player = {}
@@ -439,7 +439,7 @@ def judge_stage(game_date=None, run_id=None):
         lines_by_player.setdefault(key, []).append(row)
 
     n = 0
-    for pitcher_name, props in by_pitcher.items():
+    for (game_pk, player_id, pitcher_name), props in by_pitcher.items():
         # judge only props that have BOTH lanes and a market price
         candidates = {}
         for (market, line), lanes in props.items():
@@ -456,8 +456,11 @@ def judge_stage(game_date=None, run_id=None):
         flags = _pitcher_flags(facts, pitcher_name)
 
         try:
+            exact_lines = {key: [r for r in value if r["game_pk"] == game_pk
+                                and r["player_id"] == player_id]
+                           for key, value in lines_by_player.items()}
             n += _judge_pitcher(conn, client, run_id, game_date, pitcher_name,
-                                candidates, flags, lines_by_player)
+                                candidates, flags, exact_lines)
         except Exception as e:
             print(f"[llm.judge] {pitcher_name}: {e}")
     print(f"[llm.judge] logged {n} decisions")
@@ -528,7 +531,8 @@ def _judge_pitcher(conn, client, run_id, game_date, pitcher_name, candidates,
 # ── shared helpers ───────────────────────────────────────────────────────────
 
 def _norm(name):
-    return "".join(ch for ch in (name or "").lower() if ch.isalpha())
+    from factors import _norm_name
+    return _norm_name(name)
 
 
 def _latest_sim_run(conn, game_date):
@@ -565,6 +569,10 @@ def _priced_row(game_date, game, pitcher, market, line, p_over, books,
     if best is None and books:
         best = books[0]
 
+    import integrity
+    if kelly <= 0:
+        bet_side = None
+
     return {
         "run_id": run_id, "created_at": db.utcnow(), "game_date": game_date,
         "game_pk": game.get("game_pk"), "player_name": pitcher["name"],
@@ -576,6 +584,15 @@ def _priced_row(game_date, game, pitcher, market, line, p_over, books,
         "market_p_over": market_p, "edge_over": edge_over,
         "edge_under": edge_under, "bet_side": bet_side, "kelly_frac": kelly,
         "rationale": rationale,
+        "raw_p_over": p_over, "p_push": None,
+        "model_version": integrity.MODEL_VERSION,
+        "model_status": "shadow" if source != "judge" else "active",
+        "game_start_time": game.get("game_start_time"),
+        "line_as_of": dict(best).get("as_of") if best else None,
+        "lineup_confirmed": int(game.get("lineup_confirmed", False)),
+        "role_verified": int(pitcher.get("role_verified", False)),
+        "price_verified": bool(dict(best).get("is_live")) if best else False,
+        "role_evidence_json": pitcher.get("role_evidence_json"),
     }
 
 

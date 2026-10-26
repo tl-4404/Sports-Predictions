@@ -121,14 +121,14 @@ def fake_schedule(game_date=None):
         "home_lineup": [], "away_lineup": [1, 2, 3, 4, 5, 6, 7, 8, 9],
     }]
 
-def fake_profile(pid, season=None):
+def fake_profile(pid, season=None, as_of_date=None):
     if pid == 111:  # strikeout artist
         return {"k": 0.30, "bb": 0.06, "hit": 0.19, "batters_faced": 400,
                 "recent_pitch_counts": [98, 95, 101, 97, 99]}
     return {"k": 0.16, "bb": 0.09, "hit": 0.24, "batters_faced": 350,
             "recent_pitch_counts": [82, 78, 85, 80, 79]}
 
-def fake_batter(bid, hand, season=None):
+def fake_batter(bid, hand, season=None, as_of_date=None):
     return {"k": 0.22 + (bid % 3) * 0.02, "bb": 0.08, "hit": 0.21}
 
 data_today.get_schedule = fake_schedule
@@ -147,7 +147,7 @@ check("ace matched to posted line", len(ace_k) == 1 and ace_k[0]["line"] == 6.5)
 check("ace edge computed vs market", ace_k[0]["market_p_over"] is not None)
 check("ace favors over 6.5", ace_k[0]["p_over"] > 0.5, f"(p={ace_k[0]['p_over']:.3f})")
 bets = [p for p in preds if p["bet_side"]]
-check("at least one bet flagged", len(bets) >= 1,
+check("shadow simulator cannot flag official bets", len(bets) == 0,
       f"({[(b['player_name'], b['market'], b['bet_side']) for b in bets]})")
 check("kelly stake capped", all((b["kelly_frac"] or 0) <= 0.02 for b in bets))
 
@@ -159,6 +159,8 @@ def fake_actuals(game_pk):
     }
 
 data_today.get_starter_actuals = fake_actuals
+preview_schedule = data_today.get_schedule
+data_today.get_schedule = lambda gd=None: [{**g, "status": "Final"} for g in preview_schedule(gd)]
 n_graded = grade.grade_date("2026-07-01")
 check("all predictions graded", n_graded == len(preds), f"({n_graded})")
 
@@ -177,6 +179,8 @@ check("clv computed for bets", len(clvs) == len(bets), f"({len(clvs)})")
 
 check("innings_to_outs 5.2 = 17", data_today.innings_to_outs("5.2") == 17)
 check("innings_to_outs 7.0 = 21", data_today.innings_to_outs("7.0") == 21)
+
+data_today.get_schedule = preview_schedule
 
 # ── LLM lanes with a fake Anthropic client ───────────────────────────────────
 print("llm lanes (fake client):")
@@ -291,6 +295,7 @@ meta = _json.loads(vetoed[0]["rationale"])
 check("judge rationale stored", meta["action"] == "pass" and "blend" in meta)
 
 # grade the judge/llm rows too (sim rows already graded above)
+data_today.get_schedule = lambda gd=None: [{**g, "status": "Final"} for g in preview_schedule(gd)]
 n_graded2 = grade.grade_date("2026-07-01")
 check("llm+judge rows graded", n_graded2 == n_llm + n_judge, f"({n_graded2})")
 per_source = conn.execute(
@@ -384,10 +389,8 @@ mini, matched = backtest.merge_odds(mini, arch, replace=True)
 check("both starts matched odds", matched == 2)
 recs = backtest.run_backtest(mini, n_sims=2000, seed=0)
 mbets = [r for r in recs if r["bet_side"]]
-check("odds attached to bets", mbets and all(r["odds"] is not None for r in mbets))
-check("CLV computed from closing", any(r["clv"] is not None for r in mbets))
-check("closing price differs from open drives CLV",
-      any(abs(r["clv"]) > 0 for r in mbets if r["clv"] is not None))
+check("undated price archive cannot establish bets or ROI", not mbets)
+check("unverified closing timestamps cannot establish CLV", all(r["clv"] is None for r in recs))
 
 print()
 if FAILURES:

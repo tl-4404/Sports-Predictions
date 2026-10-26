@@ -1,14 +1,5 @@
 import os
 import pandas as pd
-import pybaseball
-from pybaseball import statcast
-
-pybaseball.cache.enable()
-
-from data_pitcher import get_pitcher_features
-from data_lineup  import get_lineup_features
-from data_park    import get_park_factors
-from data_weather import get_weather
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_CSV = os.path.join(BASE_DIR, "cache", "training_data.csv")
@@ -16,7 +7,7 @@ OUTPUT_CSV = os.path.join(BASE_DIR, "cache", "training_data.csv")
 # only keep columns actually used by feature functions — drops ~90% of Statcast columns
 KEEP_COLS = [
     "game_pk", "game_date", "pitcher", "batter",
-    "home_team", "at_bat_number", "events", "description",
+    "home_team", "inning_topbot", "at_bat_number", "events", "description",
     "pitch_type", "release_speed", "zone", "p_throws",
 ]
 
@@ -30,17 +21,20 @@ EVENT_OUTS = {
     "sac_fly_double_play": 2, "double_play": 2, "triple_play": 3,
 }
 
-# identify the starting pitcher and their Ks + outs from pitch-level game data.
-# starter = the pitcher who threw the first pitch of the game.
+# Find BOTH starters: first pitcher in each offensive half. Outs reconstructed
+# from events are approximate; official box-score labels remain preferable.
 def get_starter_stats(game_df):
-    starter_id = game_df.sort_values("at_bat_number").iloc[0]["pitcher"]
-    starter_df = game_df[game_df["pitcher"] == starter_id]
-
-    actual_ks   = starter_df["events"].isin(
-        ("strikeout", "strikeout_double_play")).sum()
-    actual_outs = starter_df["events"].map(EVENT_OUTS).fillna(0).sum()
-
-    return starter_id, int(actual_ks), int(actual_outs)
+    rows = []
+    for half in ("Top", "Bot"):
+        half_df = game_df[game_df["inning_topbot"] == half]
+        if half_df.empty:
+            continue
+        starter_id = half_df.sort_values("at_bat_number").iloc[0]["pitcher"]
+        starter_df = half_df[half_df["pitcher"] == starter_id]
+        actual_ks = starter_df["events"].isin(("strikeout", "strikeout_double_play")).sum()
+        actual_outs = starter_df["events"].map(EVENT_OUTS).fillna(0).sum()
+        rows.append((starter_id, int(actual_ks), int(actual_outs)))
+    return rows
 
 # reconstruct the opposing lineup from batters who faced the starter
 # batters are ordered by first appearance (approximates lineup order)
@@ -59,6 +53,11 @@ def get_lineup_from_game(game_df, starter_id):
 # processes one season at a time to avoid OOM — keeps only current + lookback season in RAM
 # saves result to cache/training_data.csv and returns the DataFrame
 def build_training_data(seasons):
+    import pybaseball
+    from pybaseball import statcast
+    from data_pitcher import get_pitcher_features
+    from data_lineup import get_lineup_features
+    pybaseball.cache.enable()
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
 
     # wipe existing file so re-runs don't append duplicate seasons
@@ -97,33 +96,22 @@ def build_training_data(seasons):
             game_date = game_df["game_date"].iloc[0]
             home_team = game_df["home_team"].iloc[0]
 
-            starter_id, actual_ks, actual_outs = get_starter_stats(game_df)
-            lineup = get_lineup_from_game(game_df, starter_id)
-
-            pitcher_feats = get_pitcher_features(
-                starter_id, game_date,
-                df=pitcher_lookup.get(starter_id, pd.DataFrame())
-            )
-            if not pitcher_feats:
-                continue  # skip debuts with no prior data
-
-            p_throws      = "L" if pitcher_feats["p_throws"] == 0 else "R"
-            lineup_feats  = get_lineup_features(lineup, game_date, p_throws=p_throws, batter_lookup=batter_lookup)
-            park_feats    = get_park_factors(home_team)
-            weather_feats = get_weather(home_team, game_date)
-
-            rows.append({
-                "game_pk":     game_pk,
-                "game_date":   game_date,
-                "pitcher_id":  starter_id,
-                "home_team":   home_team,
-                "actual_ks":   actual_ks,
-                "actual_outs": actual_outs,
-                **pitcher_feats,
-                **lineup_feats,
-                **park_feats,
-                **weather_feats,
-            })
+            for starter_id, actual_ks, actual_outs in get_starter_stats(game_df):
+                lineup = get_lineup_from_game(game_df, starter_id)
+                pitcher_feats = get_pitcher_features(
+                    starter_id, game_date,
+                    df=pitcher_lookup.get(starter_id, pd.DataFrame()))
+                if not pitcher_feats:
+                    continue
+                p_throws = "L" if pitcher_feats["p_throws"] == 0 else "R"
+                lineup_feats = get_lineup_features(lineup, game_date, p_throws=p_throws,
+                                                   batter_lookup=batter_lookup)
+                # Dated park/weather features require historical snapshots.
+                # Omit today's park cache and silently reconstructed weather.
+                rows.append({"game_pk": game_pk, "game_date": game_date,
+                             "pitcher_id": starter_id, "home_team": home_team,
+                             "actual_ks": actual_ks, "actual_outs": actual_outs,
+                             **pitcher_feats, **lineup_feats})
 
         del lookup_df, cur_df  # free memory before next season
 

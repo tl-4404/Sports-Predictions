@@ -125,7 +125,7 @@ def fake_schedule(game_date=None):
     }]
 
 
-def fake_profile(pid, season=None):
+def fake_profile(pid, season=None, as_of_date=None):
     if pid == 111:
         return {"k": 0.30, "bb": 0.06, "hit": 0.19, "batters_faced": 400,
                 "recent_pitch_counts": [98, 95, 101, 97, 99]}
@@ -133,7 +133,7 @@ def fake_profile(pid, season=None):
             "recent_pitch_counts": [82, 78, 85, 80, 79]}
 
 
-def fake_batter(bid, hand, season=None):
+def fake_batter(bid, hand, season=None, as_of_date=None):
     return {"k": 0.22 + (bid % 3) * 0.02, "bb": 0.08, "hit": 0.21}
 
 
@@ -158,7 +158,7 @@ ace_outs_line = [
 ][0]
 check("PP outs line kept at its own number (16.5)", ace_outs_line["line"] == 16.5)
 
-n_picks = pp.evaluate_date(DATE, n_sims=6000)
+n_picks = pp.evaluate_date(DATE, n_sims=6000, research_only=True)
 check("picks logged for both starters", n_picks == 4, f"(n={n_picks})")
 
 picks = conn.execute(
@@ -173,7 +173,7 @@ ace_k = [
 ][0]
 check("ace strikeouts picks MORE", ace_k["pick_side"] == "more",
       f"(p_over={ace_k['p_over']:.3f})")
-check("ace strikeouts clears conservative margin", ace_k["playable"] == 1,
+check("no entry terms means research HOLD", ace_k["playable"] == 0,
       f"(edge={ace_k['edge']:+.3f})")
 
 soft_k = [
@@ -188,11 +188,9 @@ check("unconfirmed opposing lineup forces HOLD",
           if pick["player_name"] == "Soft Tosser"))
 check("p_pick is the chosen side's probability",
       all(abs(pick["p_pick"] - (
-          pick["p_over"] if pick["pick_side"] == "more" else 1 - pick["p_over"]
+          pick["p_over"] if pick["pick_side"] == "more" else 1 - pick["p_over"] - pick["p_push"]
       )) < 1e-9 for pick in picks))
-check("edge = p_pick - break-even",
-      all(abs(pick["edge"] - (pick["p_pick"] - pick["breakeven"])) < 1e-9
-          for pick in picks))
+check("no fabricated entry EV", all(p["ev_2"] is None and p["ev_3"] is None for p in picks))
 check("confirmed plays require the configured margin",
       all(bool(pick["playable"]) == (pick["edge"] >= pp.PLAYABLE_MARGIN)
           for pick in picks if pick["player_name"] == "Ace Example"))
@@ -206,6 +204,8 @@ def fake_actuals(game_pk):
 
 
 data_today.get_starter_actuals = fake_actuals
+preview_schedule = data_today.get_schedule
+data_today.get_schedule = lambda gd=None: [{**g, "status": "Final"} for g in preview_schedule(gd)]
 n_graded = pp.grade_date(DATE)
 check("all picks graded", n_graded == n_picks, f"({n_graded})")
 res = conn.execute(

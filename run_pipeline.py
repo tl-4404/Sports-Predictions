@@ -46,19 +46,25 @@ def main():
         sys.exit(1 if any(s == doctor.FAIL for _, s, _ in results) else 0)
 
     failures = []
+    fresh_inputs = False
 
     if args.stage in ("odds", "all"):
-        _run("odds", failures, lambda: __import__("odds_props").refresh(args.date))
+        fresh_inputs = bool(_run("odds", failures, lambda: __import__("odds_props").refresh(args.date)))
 
     if args.stage in ("predict", "all"):
-        _run("predict", failures,
-             lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
+        forecast_count = _run("predict", failures,
+                             lambda: __import__("predict").predict_date(args.date, n_sims=args.sims))
+        fresh_inputs = fresh_inputs and bool(forecast_count)
 
     if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
         # This runner installs the preserved chat policy and appends a fresh research
         # snapshot on every invocation. The simulator remains fully independent.
-        _run("llm", failures,
-             lambda: __import__("llm_chat_runner").run_all(args.date))
+        if args.stage == "llm" or fresh_inputs:
+            _run("llm", failures,
+                 lambda: __import__("llm_chat_runner").run_all(
+                     args.date, refresh_inputs=args.stage == "llm"))
+        else:
+            print("[pipeline] skipping LLM publication: current input refresh incomplete")
     elif args.stage == "all":
         print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
 
@@ -96,6 +102,7 @@ def _run(name, failures, fn):
         result = fn()
         if result is not None:
             print(f"[pipeline] {name}: {result}")
+        return result
     except Exception as e:
         print(f"[pipeline] stage {name} failed: {e}")
         failures.append(name)

@@ -14,7 +14,7 @@ low-sample umpires toward 1.0 so a few games can't produce an extreme factor.
 """
 import json
 import os
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -110,6 +110,8 @@ def build_ump_factors(seasons=(2023, 2024, 2025), season_windows=None):
             "k_factor": round(shrunk_rate / league_rate, 4),
             "games": games,
             "pa": pa,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "through_date": max(windows[s][1] for s in seasons),
         }
 
     os.makedirs(UMP_PATH.parent, exist_ok=True)

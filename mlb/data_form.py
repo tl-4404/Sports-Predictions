@@ -18,7 +18,7 @@ Serving reads it via form.py; a missing pitcher falls back to neutral.
 import argparse
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +79,8 @@ def build_pitcher_form(season, end=None):
             "velo_baseline": round(_fb_velo(g), 2) if _fb_velo(g) is not None else None,
             "velo_recent": round(_recent_fb_velo(g), 2) if _recent_fb_velo(g) is not None else None,
             "pitches": int(pitches),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "through_date": pd.Timestamp(g["game_date"].max()).date().isoformat(),
         }
 
     # fit league K% ~ CSW% on this pull, then store each pitcher's implied K%

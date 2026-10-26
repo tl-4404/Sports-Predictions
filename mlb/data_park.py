@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timezone
 import pandas as pd
 from pybaseball import statcast
 
@@ -77,6 +78,9 @@ def _compute_park_factors(season=2024):
 def build_park_factors(season=2024):
     # Compute and cache park factors for a full season. Run once per season
     factors = _compute_park_factors(season)
+    for entry in factors.values():
+        entry["created_at"] = datetime.now(timezone.utc).isoformat()
+        entry["through_date"] = f"{season}-12-31"
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     with open(CACHE_PATH, "w") as f:
         json.dump(factors, f, indent=2)

@@ -11,7 +11,7 @@ import json
 
 import llm as base
 
-PIPELINE_VERSION = "chat-preserved-v4.0"
+PIPELINE_VERSION = "chat-audited-v5.0"
 MAX_SIDE_PROBABILITY = 0.64
 BASE_MIN_EDGE = 0.06
 OUTS_UNDER_MIN_EDGE = 0.08
@@ -222,6 +222,11 @@ def _select_primary_key(records):
             continue
         side, edge = _side_and_edge(record["p_over"], record["market_p"])
         required = _required_edge(record["key"][0], side)
+        if record["key"][0] == "pitcher_strikeouts" and side == "under":
+            stress = dict(record.get("sim", {})).get("stress_p_over")
+            # Missing numerical evidence is not a successful stress test.
+            if stress is None or float(record["market_p"]) - stress < required:
+                continue
         if edge + 1e-12 >= required:
             eligible.append((edge, record["key"]))
     if not eligible:
@@ -288,10 +293,12 @@ def _judge_pitcher_v4(conn, client, run_id, game_date, pitcher_name, candidates,
     data = json.loads(base._text_of(response))
 
     prepared = []
+    seen = set()
     for decision in data.get("decisions", []):
         key = (decision["market"], float(decision["line"]))
-        if key not in candidates:
+        if key not in candidates or key in seen:
             continue
+        seen.add(key)
         sim, llm_row = candidates[key]
         blend = blends[key]
         p_final = min(
@@ -327,8 +334,12 @@ def _judge_pitcher_v4(conn, client, run_id, game_date, pitcher_name, candidates,
 
         row = base._priced_row(
             game_date,
-            {"game_pk": sim["game_pk"]},
-            {"name": pitcher_name, "id": sim["player_id"]},
+            {"game_pk": sim["game_pk"],
+             "game_start_time": dict(sim).get("game_start_time"),
+             "lineup_confirmed": dict(sim).get("lineup_confirmed", False)},
+            {"name": pitcher_name, "id": sim["player_id"],
+             "role_verified": dict(sim).get("role_verified", False),
+             "role_evidence_json": dict(sim).get("role_evidence_json")},
             key[0],
             key[1],
             record["p_over"],

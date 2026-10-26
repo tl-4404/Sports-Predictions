@@ -404,7 +404,24 @@ def refresh(game_date=None):
     conn = db.connect()
     db.ensure_schema(conn)
     fetcher = get_fetcher()
-    rows = fetcher.fetch(game_date)
+    rows = [{**row, "data_source": type(fetcher).__name__,
+             "is_live": not isinstance(fetcher, StubPropsFetcher)}
+            for row in fetcher.fetch(game_date)]
+    if not isinstance(fetcher, StubPropsFetcher):
+        import data_today
+        from factors import _norm_name
+        by_name = {}
+        for game in data_today.get_schedule(game_date):
+            for side in ("home", "away"):
+                pitcher = game.get(f"{side}_pitcher")
+                if pitcher:
+                    by_name.setdefault(_norm_name(pitcher["name"]), []).append((game["game_pk"], pitcher["id"]))
+        for row in rows:
+            matches = by_name.get(_norm_name(row["player_name"]), [])
+            if len(matches) == 1:
+                pk, pid = matches[0]
+                if row.get("game_pk") in (None, pk) and row.get("player_id") in (None, pid):
+                    row["game_pk"], row["player_id"] = pk, pid
     n = db.insert_lines(conn, rows)
     src = type(fetcher).__name__
     print(f"[odds_props] {src}: stored {n} prop line snapshots")

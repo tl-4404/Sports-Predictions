@@ -11,6 +11,7 @@ Everything lives in the same sportsaid.db the Flask app reads.
 """
 import os
 import sqlite3
+import integrity
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -121,6 +122,32 @@ def ensure_schema(conn):
     CREATE INDEX IF NOT EXISTS idx_calibration_buckets_lookup
       ON calibration_buckets(run_id, market, source, bucket_low);
     """)
+    # Additive migration: old forecasts remain identifiable and cannot silently
+    # become training data for a different model version.
+    extra = {
+        "raw_p_over": "REAL", "p_push": "REAL",
+        "model_version": "TEXT", "model_status": "TEXT",
+        "game_start_time": "TEXT", "line_as_of": "TEXT",
+        "lineup_confirmed": "INTEGER", "role_verified": "INTEGER",
+        "eligibility_reason": "TEXT", "calibration_run_id": "TEXT",
+        "stress_p_over": "REAL",
+        "price_verified": "INTEGER",
+        "role_evidence_json": "TEXT",
+    }
+    present = {r[1] for r in conn.execute("PRAGMA table_info(prop_predictions)")}
+    for column, declaration in extra.items():
+        if column not in present:
+            conn.execute(f"ALTER TABLE prop_predictions ADD COLUMN {column} {declaration}")
+    present_lines = {r[1] for r in conn.execute("PRAGMA table_info(prop_lines)")}
+    for column, declaration in (("data_source", "TEXT"), ("is_live", "INTEGER NOT NULL DEFAULT 0")):
+        if column not in present_lines:
+            conn.execute(f"ALTER TABLE prop_lines ADD COLUMN {column} {declaration}")
+    for table in ("prop_lines", "prop_predictions", "prop_results",
+                  "calibration_runs", "calibration_buckets"):
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS immutable_{table}_{operation}
+                BEFORE {operation} ON {table}
+                BEGIN SELECT RAISE(ABORT, 'append-only audit ledger'); END""")
     conn.commit()
 
 
@@ -129,12 +156,15 @@ def insert_lines(conn, rows):
     rows = list(rows)
     if not rows:
         return 0
+    rows = [{**row, "data_source": row.get("data_source"),
+             "is_live": int(bool(row.get("is_live")))} for row in rows]
     conn.executemany(
         """INSERT INTO prop_lines
            (game_date, game_pk, event_id, player_name, player_id, market,
-            book, line, over_odds, under_odds, as_of)
+            book, line, over_odds, under_odds, as_of, data_source, is_live)
            VALUES (:game_date, :game_pk, :event_id, :player_name, :player_id,
-                   :market, :book, :line, :over_odds, :under_odds, :as_of)""",
+                   :market, :book, :line, :over_odds, :under_odds, :as_of,
+                   :data_source, :is_live)""",
         rows,
     )
     conn.commit()
@@ -142,15 +172,29 @@ def insert_lines(conn, rows):
 
 
 def insert_prediction(conn, row):
+    row = integrity.enforce(row)
+    extras = ("raw_p_over", "p_push", "model_version", "model_status",
+              "game_start_time", "line_as_of", "lineup_confirmed",
+              "role_verified", "eligibility_reason", "calibration_run_id")
+    extras += ("stress_p_over", "price_verified", "role_evidence_json")
+    for name in extras:
+        row.setdefault(name, None)
     cur = conn.execute(
         """INSERT INTO prop_predictions
            (run_id, created_at, game_date, game_pk, player_name, player_id,
             market, line, source, p_over, mean, book, over_odds, under_odds,
-            market_p_over, edge_over, edge_under, bet_side, kelly_frac, rationale)
+            market_p_over, edge_over, edge_under, bet_side, kelly_frac, rationale,
+            raw_p_over, p_push, model_version, model_status, game_start_time,
+            line_as_of, lineup_confirmed, role_verified, eligibility_reason,
+            calibration_run_id, stress_p_over, price_verified, role_evidence_json)
            VALUES (:run_id, :created_at, :game_date, :game_pk, :player_name,
                    :player_id, :market, :line, :source, :p_over, :mean, :book,
                    :over_odds, :under_odds, :market_p_over, :edge_over,
-                   :edge_under, :bet_side, :kelly_frac, :rationale)""",
+                   :edge_under, :bet_side, :kelly_frac, :rationale,
+                   :raw_p_over, :p_push, :model_version, :model_status,
+                   :game_start_time, :line_as_of, :lineup_confirmed,
+                   :role_verified, :eligibility_reason, :calibration_run_id, :stress_p_over,
+                   :price_verified, :role_evidence_json)""",
         row,
     )
     conn.commit()
