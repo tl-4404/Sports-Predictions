@@ -1,342 +1,36 @@
-# MLB Pitcher-Props Pipeline
+# MLB pitcher-props pipeline
 
-## Purpose
+Implemented targets are pitcher strikeouts and pitcher outs. The [October audit](MLB_AUDIT_2026-10-26.md) distinguishes current behavior, validation and remaining work. Fantasy score, MLB game markets and hitter models are not implemented in serving.
 
-The MLB pipeline produces auditable pitcher-prop forecasts for strikeouts, pitching
-outs, fantasy score and related markets. The system is designed to improve through
-clean historical evaluation rather than by repeatedly changing rules after individual
-wins or losses.
+## Execution and publication
 
-Its core goals are:
+The numerical log5 simulator produces shadow distributions. Independent LLM research examines current context without simulator output or market prices; the bounded judge compares those lanes with the no-vig market. Direct chat runs refresh prices and shadow forecasts first. Full orchestration reuses its just-fetched inputs and skips dependent publication after incomplete refreshes.
 
-- use exact, timestamped live lines;
-- maintain independent numerical and qualitative model lanes;
-- incorporate current lineup, role and workload information;
-- avoid overconfidence and correlated exposure;
-- preserve predictions before results are known;
-- evaluate calibration, closing-line value and unique-pitcher accuracy.
+Only the final judge can publish an actionable recommendation. Database and UI checks require the current model version, fresh live-source prices, a future game start, nine unique opposing batters, reviewed current role/workload evidence and positive EV at the offered price. Missing evidence produces HOLD. Set `MLB_USAGE_EVIDENCE_PATH` to a JSON array described in the audit; without reviewed input, official recommendations remain held. The adapter validates structure/timing; upstream researchers own factual verification.
 
-## System overview
+Policy `chat-audited-v5.0` retains the existing 70/30 blend, ±5-point judge band, 64% side cap and 6-point base edge hurdle (8 points for outs unders). These settings remain unvalidated policy, not proof of edge. Only one primary market per pitcher/game is selected. A K under also must survive the coded +4 BF numerical scenario.
 
-```text
-Live odds / pick'em lines
-        |
-        v
-Append-only line snapshots -----> Market consensus / de-vigging
-        |
-        +-------------------------------+
-        |                               |
-        v                               v
-Numerical simulator             Independent LLM audit
-(rates + distributions)         (current research + judgment)
-        |                               |
-        +---------------+---------------+
-                        v
-                  Bounded judge
-            (risk gates + one primary bet)
-                        |
-                        v
-             Stored pregame prediction
-                        |
-                        v
-              Postgame grading + CLV
-                        |
-                        v
-           Chronological calibration run
-```
+## Data and evaluation
 
-## Major modules
+- Pitcher rates use game logs strictly before the slate date. Recent pitch counts include postseason outings. Current live hitter splits use data known at fetch time; historical hitter platoon queries use completed prior seasons.
+- Park/umpire factors and LLM form summaries require dated snapshots. Missing/future snapshots are neutral or unavailable. Hand-set CSW/velocity multipliers are disabled in the default simulator.
+- SQLite line, prediction, result and calibration ledgers reject UPDATE/DELETE. Raw/final probabilities, pushes, versions, calibration identity and publication reasons are retained. Fixtures cannot authorize bets.
+- Grading waits for final complete official boxes and matches game/player IDs. Failures remain pending. CLV compares entry/closing fair probabilities on the exact contract using a live quote within 15 minutes before scheduled start.
+- Calibration uses the first priced raw pregame forecast per game/player/market/source across reruns/thresholds. Only compatible versions are used. Application requires prior creation/cutoff dates, 200 segment observations, two usable knots and 30 observations per knot. Shrinkage/monotone pooling restrain instability; fit metrics are in-sample diagnostics.
+- The scorecard selects the first official recommendation per pitcher/game/source. Decided hit rate excludes pushes. Staked paper ROI includes push stakes and excludes void stakes. No actual fill ledger exists.
+- PrizePicks stores standard More/Less research probabilities with separate push mass. Without a verified entry ledger it cannot report entry EV, playability or ROI. `entry_ev` evaluates externally supplied joint outcomes and exact settlement terms.
 
-### `mlb/data_today.py`
-
-Retrieves schedule, probable pitchers, pitcher profiles, batter rates, lineups and
-other current MLB inputs used by the model.
-
-### `mlb/odds_props.py`
-
-Captures sportsbook pitcher-prop lines and prices. Every book snapshot receives a
-shared timestamp so moved or removed lines can be distinguished from the current
-board.
-
-### `mlb/predict.py`
-
-Runs the numerical simulator. This lane should remain independent of the LLM audit.
-Its purpose is to convert stable pitcher skill, expected batters faced and game context
-into probability distributions.
-
-### `mlb/llm_saved_pipeline.py`
-
-Defines the current chat-aligned qualitative research and bounded-judge policy. Policy
-changes are versioned because prompt behavior affects historical comparability.
-
-### `mlb/llm_chat_runner.py`
-
-Refreshes current research on every invocation, then executes the independent LLM
-predictor and bounded judge. It also applies the configured external-model policy.
-
-### `mlb/policy_flags.py`
-
-Controls the role of THE BAT X through `SPORTSAID_BATX_MODE`.
-
-### `mlb/db.py`
-
-Defines append-only line, prediction, result and calibration tables in SQLite.
-
-### `mlb/calibration.py`
-
-Builds chronological calibration snapshots using one unique, priced, graded
-observation per game/player/market/line/source. Repeated intraday copies are excluded.
-
-### `run_pipeline.py`
-
-Provides the command-line entry point for odds, prediction, LLM, grading, calibration
-and diagnostic stages.
-
-## Forecast construction
-
-### Stable skill prior
-
-Recent results must not replace a stable pitcher-skill estimate by themselves. A
-recent start should materially affect the forecast only when supported by an
-underlying change such as:
-
-- velocity or movement;
-- pitch-mix usage;
-- CSW or whiff rate;
-- command change;
-- injury or recovery status;
-- role or pitch-count change.
-
-### Workload states
-
-Each pitcher should be modeled through three workload states:
-
-1. **Short** — command failure, injury caution, weather interruption or early hook.
-2. **Normal** — expected current role and typical pitch count.
-3. **Extended** — efficient outing, rested pitcher and favorable game state.
-
-The model uses the weighted mixture rather than treating the most pessimistic state as
-the median. An outs under should not qualify solely because the short state is
-favorable.
-
-### Strikeout model
-
-Strikeouts are driven by:
-
-- pitcher strikeout skill;
-- expected batters faced;
-- opponent contact and K rate by handedness;
-- pitch-mix fit against the actual lineup;
-- park, catcher and umpire effects;
-- times-through-the-order effects;
-- workload uncertainty.
-
-Every strikeout under receives a `+4 batters faced` stress test. If the under loses
-its edge under that modest workload increase, it should be downgraded rather than
-presented as a high-confidence play.
-
-### Pitching-outs model
-
-Outs require a full distribution, not only a mean. The model should represent early
-hook probability, normal completion and efficient deep-start outcomes. Inputs include:
-
-- recent pitch counts and completed workload ramp;
-- manager tendencies;
-- bullpen availability;
-- days rest;
-- opener or bulk-role risk;
-- opponent OBP and lineup quality;
-- weather interruption.
-
-Because recent performance showed overconfidence in early-hook scenarios, outs unders
-currently require a higher edge than ordinary strikeout markets.
-
-### Fantasy-score model
-
-Pitcher fantasy score should be simulated jointly. Outs, strikeouts, earned runs, win
-and quality-start bonuses are correlated and must not be added as independent median
-components.
-
-A recommended simulation order is:
-
-1. Simulate workload and batters faced.
-2. Simulate strikeouts conditional on batters faced.
-3. Simulate earned runs conditional on innings and matchup.
-4. Determine quality-start status from the same innings/run outcome.
-5. Determine win eligibility and game outcome conditionally.
-6. Apply the platform's exact scoring rules.
-
-## Decision layer
-
-### Current edge requirements
-
-| Market | Minimum edge |
-|---|---:|
-| Standard strikeout or normal market | 6 percentage points |
-| Pitching-outs under | 8 percentage points |
-| Pitcher fantasy score | 10 percentage points |
-
-These are temporary conservative requirements while the clean historical sample is
-still growing.
-
-### Probability cap
-
-Ordinary final side probabilities are temporarily capped at 64%. This prevents the
-system from publishing 70%+ confidence before its dispersion and calibration are
-supported by enough unique priced observations.
-
-### One primary market per pitcher
-
-Only one official primary prop can be selected for each pitcher. Other favorable
-markets are stored as correlated alternatives. This prevents a single pitcher thesis
-from appearing as several independent model wins or losses.
-
-### Lineup updates
-
-Confirmed lineups are required, but routine changes should not cause large subjective
-swings. A movement larger than roughly two percentage points requires a measurable
-change such as:
-
-- material lineup K-rate change;
-- material OBP change;
-- multiple meaningful platoon changes;
-- absence of a star or elite contact hitter;
-- extreme pitch-type matchup change.
-
-## THE BAT X and external-model policy
-
-### Principle
-
-THE BAT X is an external benchmark, not a component that should define SportsAid's
-standalone projection. Its purpose is to identify possible blind spots while the
-internal model is still developing.
-
-It must never:
-
-- supply the base SportsAid projection;
-- automatically choose the over or under;
-- replace verified role, lineup or workload information;
-- become a permanent requirement for the pipeline to function.
-
-### Feature flag
+## Reproduction
 
 ```bash
-SPORTSAID_BATX_MODE=bootstrap_gate
-SPORTSAID_BATX_MODE=advisory
-SPORTSAID_BATX_MODE=off
-```
-
-#### `bootstrap_gate`
-
-Default during early development. A large disagreement—currently 0.75 Ks, 1.5 outs
-or 3.5 fantasy points—triggers review or pass unless a verified current input explains
-why SportsAid should differ.
-
-This is a guardrail, not an averaging rule. THE BAT X still cannot create the base
-forecast or reverse a side automatically.
-
-#### `advisory`
-
-Target mode for a healthy standalone pipeline. External projections are logged and
-may reduce confidence, but cannot independently veto a play. Decisions are controlled
-by the SportsAid model, verified current facts and market evidence.
-
-#### `off`
-
-Ablation mode. External projections are excluded from the decision prompt so the team
-can measure standalone performance and detect hidden dependence.
-
-### Graduation criteria
-
-Move the default from `bootstrap_gate` to `advisory` after the standalone system has:
-
-- at least 200 unique, priced, graded judge predictions overall;
-- at least 75 observations in each primary market being promoted;
-- stable or improving Brier score and log loss across multiple rolling windows;
-- acceptable calibration error in the 55%-65% probability range;
-- no repeated stale-line, role or lineup integrity failures;
-- evidence that standalone ablation performance is not materially worse than gated
-  performance;
-- documented review of major SportsAid/THE BAT X disagreements.
-
-These thresholds are policy targets, not automatic proof of model quality. Promotion
-should use rolling out-of-sample results rather than one strong week.
-
-## Data integrity
-
-A valid scored recommendation requires:
-
-- exact platform and line;
-- payout type or market price;
-- pregame timestamp;
-- confirmed pitcher role;
-- confirmed opposing lineup for official play status;
-- stored probability and decision rationale;
-- no edits after the result is known.
-
-When the live PrizePicks or Underdog board is inaccessible, the automatic pipeline
-must record a zero-line run rather than substitute stale or inferred lines.
-
-## Performance evaluation
-
-Raw hit rate is insufficient. Track:
-
-- unique-pitcher hit rate;
-- Brier score;
-- log loss;
-- calibration error by probability bucket;
-- closing-line value;
-- results by market and model source;
-- results by workload-state confidence;
-- results with THE BAT X in gate, advisory and off modes;
-- performance before and after lineup confirmation;
-- frequency and outcome of late ranking reversals.
-
-Same-pitcher alternatives should never count as independent observations in slate
-summaries.
-
-## Running the pipeline
-
-```bash
-# Full pipeline
-python run_pipeline.py
-
-# Refresh odds
-python run_pipeline.py --stage odds
-
-# Numerical simulation
-python run_pipeline.py --stage predict
-
-# Fresh research, independent LLM estimate and bounded judge
-python run_pipeline.py --stage llm
-
-# Grade a date and update calibration
-python run_pipeline.py --stage grade --date 2026-08-03
-
-# Print or rebuild calibration
-python run_pipeline.py --stage calibrate
-
-# Check environment and source readiness
+pip install -r requirements-dev.txt
+make test
+make audit-baseline
 python run_pipeline.py --stage doctor
 ```
 
-## Change-management rules
+`make test` isolates seven legacy script suites, then runs the focused pytest cases. Do not collect the executable legacy scripts in one pytest process.
 
-Any material change to probability, selection, exposure or grading behavior should:
+`make audit-baseline` reproduces the frozen annual-rate test, tuned on 2023/2024 and tested on 2025. The challenger remains shadow; this does not establish daily-prop accuracy or betting returns. Synthetic backtests test numerical consistency only. Historical betting evaluation requires archived decision-time features/lineups and timestamped prices; attaching an undated CSV to box scores does not create a valid betting replay.
 
-1. Increment the policy or model version.
-2. Add or update regression tests.
-3. Document the reason and expected effect.
-4. Avoid retroactively changing historical predictions.
-5. Be evaluated on a future out-of-sample window.
-
-## Near-term roadmap
-
-1. Capture a complete, timestamped manual-board ledger when platform APIs are
-   inaccessible.
-2. Calibrate strikeout dispersion and workload-state distributions from historical
-   starter game logs.
-3. Add joint fantasy-score simulation.
-4. Report unique-pitcher performance and late-lineup-reversal outcomes directly.
-5. Run scheduled `bootstrap_gate`, `advisory` and `off` comparisons.
-6. Promote THE BAT X to advisory-only when the graduation criteria are met.
+`SPORTSAID_BATX_MODE` retains `bootstrap_gate`, `advisory` and `off` for separately logged future comparisons. External projections are benchmarks; missing values are never fabricated. Promotion needs frozen daily out-of-sample calibration, coverage and performance evidence.

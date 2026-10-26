@@ -229,13 +229,11 @@ conn.commit()
 
 board = webapp.load_prizepicks_board(conn, "2026-07-03")
 check("board returns all picks", len(board) == 3, f"({len(board)})")
-check("sorted by edge desc",
-      [round(p["edge"], 3) for p in board] == sorted(
-          [round(p["edge"], 3) for p in board], reverse=True))
+check("unverified entry EV is unavailable", all(p["edge"] is None for p in board))
 check("market_label populated",
       board[0]["market_label"] in ("Strikeouts", "Pitcher Outs"))
 playable = webapp.load_prizepicks_board(conn, "2026-07-03", playable_only=True)
-check("playable_only filters", len(playable) == 2 and all(p["playable"] for p in playable))
+check("unverified entries cannot be playable", playable == [])
 conn.close()
 
 # ── PrizePicks in the lane scorecard ─────────────────────────────────────────
@@ -286,10 +284,8 @@ row = pp_lane[0]
 check("only playable, decided legs counted (5)", row["bets"] == 5, f"({row['bets']})")
 check("wins counted (4)", row["wins"] == 4, f"({row['wins']})")
 check("hit rate 80%", abs(row["hit_rate"] - 0.8) < 1e-9, f"({row['hit_rate']:.3f})")
-expected_roi = (4 * (1 / BE - 1) - 1) / 5
-check("ROI scored vs break-even", abs(row["roi"] - expected_roi) < 1e-9,
-      f"({row['roi']:+.3f})")
-check("beating break-even -> positive ROI", row["roi"] > 0)
+check("leg accuracy does not fabricate ROI", row["roi"] is None)
+check("leg accuracy does not fabricate PnL", row["pnl"] is None)
 check("no CLV for pick'em", row["avg_clv"] is None and row["clv_beat_rate"] is None)
 conn.close()
 

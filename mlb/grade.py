@@ -4,8 +4,7 @@ For every ungraded prediction on a date:
   * pull the starter's actual Ks / outs from the MLB StatsAPI box score
   * settle over/under/push (void if the pitcher didn't start)
   * compute profit at the logged Kelly stake
-  * compute CLV: our bet-side fair prob minus the de-vigged consensus at the
-    LAST line snapshot before the game — the honest "did we beat the close"
+  * compute same-contract fair probability movement from entry to pregame close
 
 Run: python mlb/grade.py [YYYY-MM-DD]   (defaults to yesterday)
 """
@@ -14,7 +13,7 @@ from datetime import date, timedelta
 
 import db
 import data_today
-from betting_math import american_to_decimal, devig_two_way, consensus_p_over
+from betting_math import american_to_decimal, consensus_p_over, probability_clv
 
 
 def _norm(name):
@@ -30,24 +29,25 @@ def grade_date(game_date=None):
         print(f"[grade] nothing ungraded for {game_date}")
         return 0
 
-    # actual results, keyed by normalized starter name
+    # Missing/nonfinal/API-failed results remain pending and can be retried.
     actuals = {}
-    for g in data_today.get_schedule(game_date):
+    games = {g["game_pk"]: g for g in data_today.get_schedule(game_date)}
+    for g in games.values():
+        if g.get("status") != "Final":
+            continue
         try:
-            for pid, res in data_today.get_starter_actuals(g["game_pk"]).items():
-                actuals[_norm(res["name"])] = res
+            result = data_today.get_starter_actuals(g["game_pk"])
+            if len(result) == 2:
+                actuals[g["game_pk"]] = result
         except Exception as e:  # game postponed, boxscore missing, etc.
             print(f"[grade] boxscore {g['game_pk']} failed: {e}")
 
-    # closing consensus per (player, market, line)
-    closing = {}
-    for row in db.latest_lines(conn, game_date):
-        key = (_norm(row["player_name"]), row["market"], row["line"])
-        closing.setdefault(key, []).append((row["over_odds"], row["under_odds"]))
-
     graded = 0
     for p in preds:
-        res = actuals.get(_norm(p["player_name"]))
+        game = games.get(p["game_pk"])
+        if p["game_pk"] not in actuals or not p["player_id"]:
+            continue
+        res = actuals[p["game_pk"]].get(p["player_id"])
         stat = "ks" if p["market"] == "pitcher_strikeouts" else "outs"
         actual = res[stat] if res else None
 
@@ -63,13 +63,8 @@ def grade_date(game_date=None):
         if actual is not None:
             bet_won, profit = _settle(p, outcome)
 
-        close_p = consensus_p_over(closing.get(
-            (_norm(p["player_name"]), p["market"], p["line"]), []))
-        clv = None
-        if close_p is not None and p["bet_side"] in ("over", "under"):
-            ours = p["p_over"] if p["bet_side"] == "over" else 1 - p["p_over"]
-            close_side = close_p if p["bet_side"] == "over" else 1 - close_p
-            clv = ours - close_side  # >0: we thought our side better than close did
+        close_p = closing_probability(conn, p, game.get("game_start_time"))
+        clv = probability_clv(p["market_p_over"], close_p, p["bet_side"])
 
         conn.execute(
             """INSERT INTO prop_results
@@ -85,6 +80,26 @@ def grade_date(game_date=None):
     _print_summary(conn, game_date)
     conn.close()
     return graded
+
+
+def closing_probability(conn, pred, start_time):
+    """Last pre-start complete board per book; never substitute a moved line."""
+    if not start_time:
+        return None
+    rows = conn.execute(
+        """SELECT pl.over_odds, pl.under_odds FROM prop_lines pl
+           WHERE pl.game_date=? AND pl.game_pk=? AND pl.player_id=?
+             AND pl.market=? AND pl.line=?
+             AND pl.is_live=1
+             AND julianday(?) - julianday(pl.as_of) <= 15.0 / (24 * 60)
+             AND julianday(pl.as_of) = (
+               SELECT MAX(julianday(q.as_of)) FROM prop_lines q
+               WHERE q.game_date=pl.game_date AND q.book=pl.book
+                 AND julianday(q.as_of) < julianday(?))""",
+        (pred["game_date"], pred["game_pk"], pred["player_id"],
+         pred["market"], pred["line"], start_time, start_time),
+    ).fetchall()
+    return consensus_p_over([(r["over_odds"], r["under_odds"]) for r in rows])
 
 
 def _settle(pred, outcome):

@@ -45,8 +45,19 @@ def mkrow(gd, src, p_over, bet="over", kelly=0.02):
             "book": "BookA", "over_odds": -110, "under_odds": -110,
             "market_p_over": 0.5, "edge_over": p_over - 0.5,
             "edge_under": 0.5 - p_over, "bet_side": bet, "kelly_frac": kelly,
+            "model_version": "mlb-audit-v5", "raw_p_over": p_over,
+            "game_start_time": gd + "T23:00:00+00:00",
+            "created_at": gd + "T16:00:00+00:00",
             "rationale": '{"action":"bet","rationale":"deep start likely"}'
                          if src != "sim" else None}
+
+
+def archive_fixture(conn, row):
+    # Historical already-logged fixture, not a new live recommendation.
+    columns = list(row)
+    return conn.execute("INSERT INTO prop_predictions (" + ",".join(columns) + ") VALUES ("
+                        + ",".join("?" for _ in columns) + ")",
+                        [row[c] for c in columns]).lastrowid
 
 
 with app.app_context():
@@ -56,11 +67,11 @@ with app.app_context():
 
     # today: all three lanes on one prop → 3-way comparison
     for src, p in [("sim", 0.62), ("llm", 0.66), ("judge", 0.64)]:
-        propdb.insert_prediction(conn, mkrow(today, src, p))
+        archive_fixture(conn, mkrow(today, src, p))
 
     # yesterday: one graded bet per lane → scorecard (sim/judge win, llm loses)
     for src, p, won in [("sim", 0.62, 1), ("llm", 0.66, 0), ("judge", 0.64, 1)]:
-        pid = propdb.insert_prediction(conn, mkrow(yest, src, p))
+        pid = archive_fixture(conn, mkrow(yest, src, p))
         profit = 0.02 * 0.909 if won else -0.02
         conn.execute(
             """INSERT INTO prop_results (prediction_id, graded_at, actual,

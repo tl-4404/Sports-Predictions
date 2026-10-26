@@ -48,39 +48,30 @@ def _final_game_pks(game_date):
     return pks
 
 
-def _lines_for(actual_ks, actual_outs):
-    """Synthetic .5 lines bracketing the actual result, so calibration is
-    measured across a spread of probabilities. Replace with real posted lines
-    when you have them."""
-    lines = []
-    for market, center in (("pitcher_strikeouts", actual_ks),
-                           ("pitcher_outs", actual_outs)):
-        base = round(center)
-        for off in (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5):
-            line = base + off
-            if line > 0:
-                lines.append({"market": market, "line": line})
-    return lines
+def _lines_for():
+    """Predeclared diagnostic grid, independent of the realized outcome.
+
+    These are not historical offers and cannot establish betting profitability.
+    """
+    return ([{"market": "pitcher_strikeouts", "line": x + 0.5} for x in range(2, 10)]
+            + [{"market": "pitcher_outs", "line": x + 0.5} for x in range(9, 22)])
 
 
 def build_game(game_pk, home_team_name=None):
     box = _get(f"/game/{game_pk}/boxscore")
-    gdate = None
-    try:
-        gdate = _get(f"/schedule", gamePk=game_pk)["dates"][0]["games"][0]["gameDate"][:10]
-    except (KeyError, IndexError, requests.RequestException):
-        pass
-    prev_season = (date.fromisoformat(gdate).year - 1) if gdate else date.today().year - 1
+    game = _get(f"/schedule", gamePk=game_pk)["dates"][0]["games"][0]
+    gdate = game.get("officialDate") or game["gameDate"][:10]
+    prev_season = date.fromisoformat(gdate).year - 1
 
     hp_ump = None
     for off in box.get("officials", []):
         if off.get("officialType") == "Home Plate":
             hp_ump = (off.get("official") or {}).get("fullName")
-    k_ump = factors.ump_k_factor(hp_ump)
+    k_ump = 1.0  # no dated historical umpire-factor snapshot is available
 
     home_name = (box.get("teams", {}).get("home", {}).get("team", {}) or {}).get("name") \
         or home_team_name or ""
-    k_park = factors.park_k_factor(home_name)
+    k_park = 1.0  # never apply today's learned park cache to an earlier season
 
     rows = []
     for side, opp in (("home", "away"), ("away", "home")):
@@ -96,24 +87,29 @@ def build_game(game_pk, home_team_name=None):
         name = (pdata.get("person") or {}).get("fullName")
 
         hand = data_today._pitch_hand(starter_id)
-        profile = data_today.get_pitcher_profile(starter_id, season=prev_season)
+        profile = data_today.get_pitcher_profile(starter_id, season=prev_season, as_of_date=gdate)
 
         opp_order = box["teams"][opp].get("battingOrder", [])[:9]
         lineup = []
         for bid in opp_order:
-            r = data_today.get_batter_rates(bid, hand, season=prev_season)
+            r = data_today.get_batter_rates(bid, hand, season=prev_season, as_of_date=gdate)
             lineup.append({"k": r["k"], "bb": r["bb"], "hit": r["hit"]})
         while len(lineup) < 9:
             lineup.append(dict(data_today.LEAGUE))
 
         rows.append({
             "game_date": gdate, "pitcher_name": name,
+            "game_pk": game_pk, "pitcher_id": starter_id,
+            "game_start_time": game["gameDate"],
+            "evaluation_scope": "retrospective_skill_diagnostic_not_decision_replay",
+            "lineup_provenance": "actual_boxscore_not_archived_pregame",
+            "factor_provenance": "neutral_no_historical_snapshots",
             "pitcher": {"k": profile["k"], "bb": profile["bb"], "hit": profile["hit"]},
             "lineup": lineup,
             "recent_pitch_counts": profile["recent_pitch_counts"],
             "k_park": k_park, "k_ump": k_ump,
             "actual_ks": actual_ks, "actual_outs": actual_outs,
-            "lines": _lines_for(actual_ks, actual_outs),
+            "lines": _lines_for(),
         })
     return rows
 

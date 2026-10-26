@@ -26,6 +26,16 @@ remain append-only and auditable.
 
 See [docs/MLB_PIPELINE.md](docs/MLB_PIPELINE.md) for the full design.
 
+The October audit is implemented as model `mlb-audit-v5` and chat policy
+`chat-audited-v5.0`. Read [the findings and limitations](docs/MLB_AUDIT_2026-10-26.md)
+before interpreting a board or backtest. Numerical forecasts remain shadow;
+unverified prices, incomplete lineups and missing reviewed usage evidence produce
+HOLD. PrizePicks leg forecasts have no entry EV or ROI without actual entry terms.
+
+For reproducible development checks, install `requirements-dev.txt`, run `make test`,
+and use `make audit-baseline` for the frozen annual-rate holdout. The latter is not
+a daily-prop accuracy test or a betting-return backtest.
+
 ## Pipeline stages
 
 ```bash

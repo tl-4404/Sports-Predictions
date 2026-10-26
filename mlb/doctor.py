@@ -83,9 +83,13 @@ def _check_caches():
     present = [n for n in ("park_factors.json", "ump_factors.json",
                            "pitcher_form.json") if (base / n).exists()]
     if not present:
-        return WARN, ("no park/ump/form caches — simulator runs neutral; build "
-                      "with data_park/data_umpire/data_form for accuracy")
-    return OK, f"present: {', '.join(present)}"
+        return WARN, "no factor caches; neutral assumptions are not evidence of betting readiness"
+    return WARN, f"present but require provenance/validation: {', '.join(present)}; CSW/velo challenger disabled"
+
+
+def _check_model_evidence():
+    return WARN, ("v5 numerical forecasts remain shadow; role/workload evidence and "
+                  "fresh live prices are required for judge publication; no verified pick'em entry ledger")
 
 
 CHECKS = [
@@ -95,6 +99,7 @@ CHECKS = [
     ("odds source", _check_odds),
     ("prizepicks", _check_prizepicks),
     ("accuracy caches", _check_caches),
+    ("model evidence", _check_model_evidence),
 ]
 
 

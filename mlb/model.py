@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
+from training_validation import chronological_features
 import joblib
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -61,8 +62,7 @@ def load_data():
 
     # fill NaN with column median (batter splits often have gaps);
     # medians are saved so inference fills the same way (see train_model)
-    medians = X_df.median()
-    X_df = X_df.fillna(medians)
+    X_df, medians, train_idx, val_idx = chronological_features(X_df, df["game_date"])
     load_data.medians = medians  # stashed for train_model to persist
 
     feature_cols = list(X_df.columns)
@@ -70,13 +70,6 @@ def load_data():
 
     # time-based split: last 20% of games by date for validation
     # prevents data leakage — model never sees future games during training
-    dates    = df["game_date"].values
-    sort_idx = np.argsort(dates)
-    split    = int(len(sort_idx) * 0.8)
-
-    train_idx = sort_idx[:split]
-    val_idx   = sort_idx[split:]
-
     return X, y_ks, y_outs, feature_cols, train_idx, val_idx
 
 

@@ -14,9 +14,11 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 from db import connect, ensure_schema
+from integrity import MODEL_VERSION
 
-MIN_AUTO_SAMPLE = 50
+MIN_AUTO_SAMPLE = 200
 FULL_CALIBRATION_SAMPLE = 200
+MIN_BUCKET_SAMPLE = 30
 BUCKET_WIDTH = 0.05
 EPS = 1e-6
 
@@ -42,24 +44,27 @@ def _eligible_rows(conn, through_date: Optional[str] = None):
         f"""
         WITH ranked AS (
           SELECT
-            p.id, p.game_date, p.market, p.source, p.p_over,
+            p.id, p.game_date, p.market, p.source, p.raw_p_over AS p_over,
             p.market_p_over, p.bet_side, r.outcome, r.closing_p_over,
             ROW_NUMBER() OVER (
               PARTITION BY
                 p.game_date,
                 COALESCE(p.game_pk, -1),
                 COALESCE(p.player_id, -1),
-                LOWER(p.player_name),
                 p.market,
-                p.line,
                 p.source
-              ORDER BY p.created_at DESC, p.id DESC
+              ORDER BY julianday(p.created_at), p.id
             ) AS recency_rank
           FROM prop_predictions p
           JOIN prop_results r ON r.prediction_id = p.id
           WHERE r.outcome IN ('over','under')
             AND r.actual IS NOT NULL
             AND p.market_p_over IS NOT NULL
+            AND p.raw_p_over IS NOT NULL
+            AND p.price_verified = 1
+            AND p.model_version = '{MODEL_VERSION}'
+            AND p.game_pk IS NOT NULL AND p.player_id IS NOT NULL
+            AND julianday(p.created_at) < julianday(p.game_start_time)
             {date_clause}
         )
         SELECT id, game_date, market, source, p_over, market_p_over,
@@ -128,6 +133,18 @@ def _build_buckets(rows):
             "hit_rate": raw_rate,
             "calibrated_p": calibrated,
         })
+    # Pool adjacent violators: an increased raw probability must never map to
+    # a lower forecast. Apply to the shrunk event counts, not calibrated inputs.
+    blocks = []
+    for i, bucket in enumerate(result):
+        weight = bucket["n"] + (50.0 if bucket["n"] < FULL_CALIBRATION_SAMPLE else 20.0)
+        blocks.append([i, i, weight, weight * bucket["calibrated_p"]])
+        while len(blocks) > 1 and blocks[-2][3] / blocks[-2][2] > blocks[-1][3] / blocks[-1][2]:
+            right, left = blocks.pop(), blocks.pop()
+            blocks.append([left[0], right[1], left[2] + right[2], left[3] + right[3]])
+    for start, end, weight, total in blocks:
+        for i in range(start, end + 1):
+            result[i]["calibrated_p"] = total / weight
     return result
 
 
@@ -141,7 +158,7 @@ def fit(through_date: Optional[str] = None) -> dict:
     )
     run_id = (
         f"cal-{cutoff}-"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
     )
 
     segments = [("all", "all", rows)]
@@ -194,6 +211,11 @@ def fit(through_date: Optional[str] = None) -> dict:
                     "minimum_auto_sample": MIN_AUTO_SAMPLE,
                     "deduplicated": True,
                     "priced_rows_only": True,
+                    "model_version": MODEL_VERSION,
+                    "input": "raw_p_over",
+                    "decision_protocol": "first_pregame_contract_per_game_player_market_source",
+                    "minimum_bucket_sample": MIN_BUCKET_SAMPLE,
+                    "fit_metrics_are_in_sample": True,
                 }),
             ),
         )
@@ -232,16 +254,19 @@ def calibrated_probability(
     market: str,
     source: str,
     as_of_date: Optional[str] = None,
+    return_snapshot: bool = False,
 ) -> float:
     """Return the latest historically valid calibrated probability."""
     raw_p = _clip(raw_p)
-    date_filter = "AND cr.through_date < ?" if as_of_date else ""
+    result = lambda probability, snapshot=None: (probability, snapshot) if return_snapshot else probability
+    date_filter = ("AND cr.through_date < ? AND julianday(cr.created_at) < julianday(?)"
+                   if as_of_date else "")
     args = [market, source]
     if as_of_date:
-        args.append(as_of_date)
+        args += [as_of_date, as_of_date]
     row = conn.execute(
         f"""
-        SELECT cr.run_id, cr.sample_size
+        SELECT cr.run_id, cr.sample_size, cr.metadata_json
         FROM calibration_runs cr
         WHERE cr.market = ? AND cr.source = ? {date_filter}
         ORDER BY cr.through_date DESC, cr.created_at DESC
@@ -250,16 +275,24 @@ def calibrated_probability(
         args,
     ).fetchone()
     if not row or row["sample_size"] < MIN_AUTO_SAMPLE:
-        return raw_p
-    bucket = conn.execute(
-        """SELECT calibrated_probability
+        return result(raw_p)
+    metadata = json.loads(row["metadata_json"] or "{}")
+    if metadata.get("model_version") != MODEL_VERSION or metadata.get("input") != "raw_p_over":
+        return result(raw_p)
+    buckets = conn.execute(
+        """SELECT mean_predicted, calibrated_probability
            FROM calibration_buckets
            WHERE run_id = ? AND market = ? AND source = ?
-             AND ? >= bucket_low AND ? < bucket_high
-           ORDER BY bucket_low DESC LIMIT 1""",
-        (row["run_id"], market, source, raw_p, raw_p),
-    ).fetchone()
-    return _clip(bucket["calibrated_probability"]) if bucket else raw_p
+             AND sample_size >= ? ORDER BY mean_predicted""",
+        (row["run_id"], market, source, MIN_BUCKET_SAMPLE),
+    ).fetchall()
+    if len(buckets) < 2:
+        return result(raw_p)
+    knots = [(0.0, 0.0)] + [(b["mean_predicted"], b["calibrated_probability"]) for b in buckets] + [(1.0, 1.0)]
+    for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+        if x0 <= raw_p <= x1:
+            return result(_clip(y0 + (y1 - y0) * (raw_p - x0) / max(EPS, x1 - x0)), row["run_id"])
+    return result(raw_p)
 
 
 def report(through_date: Optional[str] = None) -> str:

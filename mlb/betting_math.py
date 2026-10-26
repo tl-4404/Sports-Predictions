@@ -1,9 +1,28 @@
 """Shared betting math: odds conversion, de-vigging, Kelly staking."""
+import math
+
+
+def valid_american(odds):
+    try:
+        return math.isfinite(float(odds)) and abs(float(odds)) >= 100
+    except (TypeError, ValueError):
+        return False
+
+
+def probability_clv(entry_p_over, closing_p_over, side):
+    """Same-contract movement in fair probability, positive in our favor.
+
+    This is probability-point CLV, not realized return or model disagreement.
+    """
+    if entry_p_over is None or closing_p_over is None or side not in ("over", "under"):
+        return None
+    movement = closing_p_over - entry_p_over
+    return movement if side == "over" else -movement
 
 
 def american_to_prob(odds):
     """Implied probability including vig."""
-    if odds is None:
+    if not valid_american(odds):
         return None
     odds = float(odds)
     if odds > 0:
@@ -12,6 +31,8 @@ def american_to_prob(odds):
 
 
 def american_to_decimal(odds):
+    if not valid_american(odds):
+        raise ValueError("invalid American odds")
     odds = float(odds)
     if odds > 0:
         return 1.0 + odds / 100.0
@@ -51,7 +72,7 @@ def kelly_fraction(p_win, american_odds, multiplier=0.25, cap=0.02):
     multiplier: fraction of full Kelly (0.25 = quarter Kelly, standard for
     model uncertainty). cap: hard ceiling per bet. Returns 0 when no edge.
     """
-    if p_win is None or american_odds is None:
+    if p_win is None or not valid_american(american_odds):
         return 0.0
     b = american_to_decimal(american_odds) - 1.0  # net odds
     if b <= 0:

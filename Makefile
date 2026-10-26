@@ -60,6 +60,14 @@ test: $(VENV)                          ## run all offline test suites (no networ
 	$(PY) tests/test_prizepicks_offline.py
 	$(PY) tests/test_interface_and_toggle.py
 	$(PY) tests/test_infra.py
+	$(PY) tests/test_app_offline.py
+	$(PY) tests/test_mlb_audit_regressions.py
+	$(PY) tests/test_prizepicks_fetcher_audit.py
+	$(PY) -m pytest -q tests/test_llm_chat_pipeline.py tests/test_mlb_v5.py
+
+.PHONY: audit-baseline
+audit-baseline: $(VENV)                ## reproduce annual skill holdout, not a betting backtest
+	$(PY) mlb/skill_baseline.py --frozen-counts mlb/fixtures/skill_counts_2020_2025.json --out docs/validation/skill_holdout_2025.json
 
 .PHONY: clean
 clean:                                 ## remove the venv

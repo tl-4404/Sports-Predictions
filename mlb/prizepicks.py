@@ -51,8 +51,8 @@ STAT_MAP = {
     "outs recorded": "pitcher_outs",
 }
 
-# Standard PrizePicks power-play multipliers. Only the 2-pick rate is used for
-# the automatic play gate; other entries are retained for reporting/tests.
+# Hypothetical examples for math tests only. They are not verified live terms
+# and must never authorize a pick or supply an entry EV.
 POWER_PAYOUTS = {2: 3.0, 3: 6.0, 4: 10.0, 5: 20.0, 6: 37.5}
 TARGET_LEGS = 2
 EVALUATED_ODDS_TYPE = "standard"
@@ -70,6 +70,26 @@ def power_ev(p, n_legs, payouts=None):
     """Net EV per unit stake, assuming independent equal-probability legs."""
     payouts = payouts or POWER_PAYOUTS
     return payouts[n_legs] * (p ** n_legs) - 1.0
+
+
+def entry_ev(joint_probabilities, gross_returns):
+    """EV of an actual joint W/L/P distribution and supplied payout table.
+
+    Gross returns include returned stake. No independence assumption, invented
+    companion legs or hardcoded push payout is introduced here. The caller must
+    obtain terms and joint probabilities for the exact entry separately.
+    """
+    import math
+    if not joint_probabilities or any(not math.isfinite(p) or p < 0
+                                      for p in joint_probabilities.values()):
+        raise ValueError("invalid joint distribution")
+    if abs(sum(joint_probabilities.values()) - 1.0) > 1e-8:
+        raise ValueError("joint probabilities must sum to one")
+    if not set(joint_probabilities) <= set(gross_returns):
+        raise ValueError("missing settlement terms, including pushes")
+    if any(not math.isfinite(v) or v < 0 for v in gross_returns.values()):
+        raise ValueError("invalid gross payout")
+    return sum(p * gross_returns[state] for state, p in joint_probabilities.items()) - 1.0
 
 
 def _normalized_odds_type(value):
@@ -280,6 +300,9 @@ def ensure_schema(conn):
                    "TEXT NOT NULL DEFAULT 'standard'")
     _ensure_column(conn, "prizepicks_picks", "odds_type",
                    "TEXT NOT NULL DEFAULT 'standard'")
+    for column, declaration in (("p_push", "REAL"), ("p_over_conditional", "REAL"),
+                                ("entry_status", "TEXT")):
+        _ensure_column(conn, "prizepicks_picks", column, declaration)
     conn.commit()
 
 
@@ -326,7 +349,7 @@ def _latest_snapshot_time(conn, game_date):
 def _snapshot_is_fresh(conn, game_date):
     """Require a recent live-board snapshot for today's real-money run."""
     if game_date != date.today().isoformat():
-        return True
+        return False
     stamp = _latest_snapshot_time(conn, game_date)
     if not stamp:
         return False
@@ -339,7 +362,8 @@ def _snapshot_is_fresh(conn, game_date):
 
 
 def _norm(name):
-    return "".join(ch for ch in (name or "").lower() if ch.isalpha())
+    from factors import _norm_name
+    return _norm_name(name)
 
 
 def refresh(game_date=None):
@@ -359,14 +383,14 @@ def refresh(game_date=None):
     return n
 
 
-def evaluate_date(game_date=None, n_sims=N_SIMS):
+def evaluate_date(game_date=None, n_sims=N_SIMS, research_only=False):
     """Score every currently posted standard PrizePicks line."""
     game_date = game_date or date.today().isoformat()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     conn = db.connect()
     ensure_schema(conn)
 
-    if not _snapshot_is_fresh(conn, game_date):
+    if not research_only and not _snapshot_is_fresh(conn, game_date):
         print(
             f"[prizepicks] refusing to evaluate {game_date}: "
             f"no projection snapshot within {LINE_MAX_AGE_MINUTES} minutes"
@@ -384,9 +408,11 @@ def evaluate_date(game_date=None, n_sims=N_SIMS):
 
     n_logged = 0
     for game in data_today.get_schedule(game_date):
-        k_park = park_k_factor(game["home_team"])
+        if game.get("status") != "Preview" and not research_only:
+            continue
+        k_park = park_k_factor(game["home_team"], as_of_date=game_date)
         ump_name = data_today.get_home_plate_umpire(game["game_pk"])
-        k_ump = ump_k_factor(ump_name)
+        k_ump = ump_k_factor(ump_name, as_of_date=game_date)
         for side in ("home", "away"):
             pitcher = game[f"{side}_pitcher"]
             if not pitcher:
@@ -422,24 +448,27 @@ def _log_pick(
     conn, run_id, game_date, game, pitcher, line_row, arr, allow_play=True
 ):
     line = line_row["line"]
-    p_over, p_under, _ = simulator.prob_over(arr, line)
-    if p_over >= 0.5:
+    p_conditional, p_under_conditional, p_push = simulator.prob_over(arr, line)
+    p_over = p_conditional * (1 - p_push)
+    p_under = p_under_conditional * (1 - p_push)
+    if p_over >= p_under:
         pick_side, p_pick = "more", p_over
     else:
         pick_side, p_pick = "less", p_under
-    breakeven = power_breakeven(TARGET_LEGS)
-    edge = p_pick - breakeven
-    playable = bool(allow_play and edge >= PLAYABLE_MARGIN)
+    # Legacy NOT NULL columns use neutral placeholders. No entry/payout is
+    # recorded in this table, so neither an EV nor a playable flag is valid.
+    breakeven, edge, playable = 0.0, 0.0, False
     conn.execute(
         """INSERT INTO prizepicks_picks
            (run_id, created_at, game_date, game_pk, player_name, player_id,
             market, line, odds_type, p_over, pick_side, p_pick, breakeven, edge,
-            ev_2, ev_3, playable, mean)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ev_2, ev_3, playable, mean, p_push, p_over_conditional, entry_status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, db.utcnow(), game_date, game["game_pk"], pitcher["name"],
          pitcher.get("id"), line_row["market"], line, line_row["odds_type"],
-         p_over, pick_side, p_pick, breakeven, edge, power_ev(p_pick, 2),
-         power_ev(p_pick, 3), 1 if playable else 0, float(arr.mean())))
+         p_over, pick_side, p_pick, breakeven, edge, None,
+         None, 0, float(arr.mean()), p_push, p_conditional,
+         "shadow_no_verified_entry_terms"))
     conn.commit()
     return 1
 
@@ -460,9 +489,13 @@ def grade_date(game_date=None):
         return 0
 
     actuals_by_game = {}
+    final_ids = {g["game_pk"] for g in data_today.get_schedule(game_date)
+                 if g.get("status") == "Final"}
     graded = 0
     for pick in picks:
         game_pk = pick["game_pk"]
+        if game_pk not in final_ids or not pick["player_id"]:
+            continue
         if game_pk not in actuals_by_game:
             try:
                 actuals_by_game[game_pk] = (
@@ -470,7 +503,9 @@ def grade_date(game_date=None):
                 )
             except Exception as exc:
                 print(f"[prizepicks] actuals for game {game_pk} failed ({exc})")
-                actuals_by_game[game_pk] = {}
+                actuals_by_game[game_pk] = None
+        if not actuals_by_game[game_pk] or len(actuals_by_game[game_pk]) != 2:
+            continue
         stat = "ks" if pick["market"] == "pitcher_strikeouts" else "outs"
         box = actuals_by_game[game_pk].get(pick["player_id"])
         actual = box.get(stat) if box else None
@@ -522,9 +557,8 @@ def print_board(game_date=None):
         "pitcher_strikeouts": "Strikeouts",
         "pitcher_outs": "Pitcher Outs",
     }
-    breakeven = power_breakeven(TARGET_LEGS)
     print(f"\n===== PrizePicks STANDARD Board — {game_date}  "
-          f"(break-even {breakeven:.1%} for a {TARGET_LEGS}-pick power) =====")
+          "(research only; no verified entry payout) =====")
     header = (f"{'Pitcher':<15}{'Stat':<13}{'PP Line':>8}  {'Pick':<6}"
               f"{'P(pick)':>8}{'Edge':>8}  {'Play?':<6}")
     print(header + "\n" + "-" * len(header))

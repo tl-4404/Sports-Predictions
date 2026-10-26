@@ -33,15 +33,15 @@
   {% if mlb_scoreboard %}
   <section>
     <h2 class="section-title">Lane scorecard <span class="muted" style="font-size:14px;">· last 14 days</span></h2>
-    <p class="muted" style="margin:-6px 0 10px;">Which lane to trust: graded ROI (at logged Kelly stakes) and closing-line value per pipeline. PrizePicks ROI is scored against its parlay break-even (no CLV — pick'em has no market close).</p>
+    <p class="muted" style="margin:-6px 0 10px;">Unique pregame forecasts. Sportsbook returns assume fills at logged prices and stakes; they are paper results. PrizePicks shows leg accuracy only. Entry ROI requires recorded partners, stakes, payout terms and settlement.</p>
     <div class="table-scroll">
       <table class="table">
         <thead>
           <tr>
             <th scope="col">Lane</th>
-            <th scope="col">Bets</th>
+            <th scope="col">Decided picks</th>
             <th scope="col">Hit rate</th>
-            <th scope="col">ROI</th>
+            <th scope="col">Paper ROI</th>
             <th scope="col">Avg CLV</th>
             <th scope="col">Beat close</th>
           </tr>
@@ -127,7 +127,7 @@
     <h2 class="section-title">PrizePicks best lines</h2>
     <p class="muted" style="margin:-6px 0 10px;">
       Separate from the sportsbooks: pick'em projections (no two-way odds) scored off the simulator distribution.
-      <span class="badge">Play</span> clears the {{ "%.1f%%"|format(prizepicks_picks[0].breakeven * 100) }} per-leg break-even for a 2-pick power play; payouts are fixed by parlay size, not price.
+      Research probabilities only. An entry needs verified payout and push rules plus a joint forecast for its actual legs before it can receive an EV rating.
     </p>
     <div class="table-scroll">
       <table class="table">
@@ -138,7 +138,7 @@
             <th scope="col">PP line</th>
             <th scope="col">Pick</th>
             <th scope="col" title="Simulator probability of the picked side">P(pick)</th>
-            <th scope="col" title="P(pick) minus the parlay break-even">Edge</th>
+            <th scope="col">Entry EV</th>
             <th scope="col">Play?</th>
           </tr>
         </thead>
@@ -150,7 +150,7 @@
             <td data-label="PP line">{{ p.line }}</td>
             <td data-label="Pick"><span class="badge">{{ p.pick_side|capitalize }}</span></td>
             <td data-label="P(pick)">{{ "%.0f%%"|format(p.p_pick * 100) }}</td>
-            <td data-label="Edge">{{ "%+.1f%%"|format(p.edge * 100) }}</td>
+            <td data-label="Entry EV">—</td>
             <td data-label="Play?">
               {% if p.playable %}<span class="badge">Play</span>{% else %}<span class="muted">pass</span>{% endif %}
             </td>

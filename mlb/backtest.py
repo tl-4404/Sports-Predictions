@@ -31,16 +31,18 @@ import argparse
 import csv
 import json
 import math
+import os
 import sys
 
 import numpy as np
 
 import factors
 import simulator
+from integrity import timestamp
 from betting_math import (american_to_decimal, consensus_p_over,
-                          kelly_fraction)
+                          kelly_fraction, probability_clv)
 
-MIN_EDGE = 0.03
+MIN_EDGE = float(os.getenv("MLB_MIN_EDGE", "0.06"))
 
 # accept a few common spellings of the two markets in an odds archive
 MARKET_ALIASES = {
@@ -70,7 +72,18 @@ def run_backtest(dataset, n_sims=4000, seed=0):
             arr = samples.get(ln["market"])
             if arr is None or actual[ln["market"]] is None:
                 continue
-            records.append(_score_line(arr, actual[ln["market"]], ln))
+            ln = dict(ln)
+            # A box-score reconstruction is a skill diagnostic, even when a
+            # price file exists. Betting evaluation needs a decision-time replay.
+            decision, feature = timestamp(ln.get("decision_time")), timestamp(row.get("feature_as_of"))
+            replay = (row.get("evaluation_scope") == "decision_replay"
+                      and row.get("lineup_provenance") == "archived_pregame"
+                      and decision and feature and feature <= decision)
+            ln["prices_verified"] = bool(ln.get("prices_verified") and replay)
+            record = _score_line(arr, actual[ln["market"]], ln)
+            record.update(game_date=row.get("game_date"), game_pk=row.get("game_pk", i),
+                          player_id=row.get("pitcher_id"), synthetic=row.get("game_date") == "synthetic")
+            records.append(record)
     return records
 
 
@@ -92,7 +105,7 @@ def _score_line(arr, actual_value, ln):
            "kelly": 0.0}
 
     market_p = consensus_p_over([(ln.get("over_odds"), ln.get("under_odds"))])
-    if market_p is not None:
+    if market_p is not None and (ln.get("prices_verified") or ln.get("synthetic_prices")):
         rec["market_p_over"] = market_p
         edge_over = p_over - market_p
         edge_under = p_under - (1 - market_p)
@@ -111,14 +124,16 @@ def _score_line(arr, actual_value, ln):
         dec = american_to_decimal(rec["odds"])
         rec["profit"] = (dec - 1.0) if won else -1.0  # flat 1u
         rec["won"] = won
+    elif rec["bet_side"] and over_hit is None:
+        rec["profit"], rec["won"] = 0.0, None
 
     # CLV vs the closing de-vigged consensus, if a closing price was recorded
     close_p = consensus_p_over(
         [(ln.get("closing_over_odds"), ln.get("closing_under_odds"))])
     if close_p is not None and rec["bet_side"]:
-        ours = p_over if rec["bet_side"] == "over" else p_under
-        close_side = close_p if rec["bet_side"] == "over" else 1 - close_p
-        rec["clv"] = ours - close_side
+        rec["clv"] = probability_clv(market_p, close_p, rec["bet_side"])
+    if rec["kelly"] <= 0:
+        rec.update(bet_side=None, profit=None, clv=None)
     return rec
 
 
@@ -141,8 +156,8 @@ def load_odds_archive(path):
       game_date, player_name, market, line, over_odds, under_odds,
       [closing_over_odds, closing_under_odds]
     'market' may be pitcher_strikeouts/pitcher_outs or a common alias.
-    Closing prices are optional (needed only for CLV); when absent, the
-    opening price is reused so CLV is ~0 rather than missing.
+    Prices without game/player IDs and decision/as-of timestamps are retained
+    as unverified research input. Missing closes stay missing.
     """
     if path.lower().endswith(".json"):
         with open(path) as f:
@@ -159,13 +174,21 @@ def load_odds_archive(path):
             continue
         over = _to_num(r.get("over_odds"))
         under = _to_num(r.get("under_odds"))
-        key = (str(r.get("game_date", "")).strip(),
-               factors._norm_name(r.get("player_name")))
+        game_pk, player_id = _to_num(r.get("game_pk")), _to_num(r.get("player_id"))
+        key = (str(r.get("game_date", "")).strip(), game_pk, player_id) if game_pk and player_id else (
+               str(r.get("game_date", "")).strip(), factors._norm_name(r.get("player_name")))
+        entry, decision, start = (timestamp(r.get(k)) for k in ("as_of", "decision_time", "game_start_time"))
+        close = timestamp(r.get("closing_as_of"))
+        verified = bool(game_pk and player_id and entry and decision and start
+                        and entry <= decision < start
+                        and (decision - entry).total_seconds() <= 15 * 60)
+        close_valid = verified and close and decision <= close < start
         archive.setdefault(key, []).append({
             "market": market, "line": float(line),
             "over_odds": over, "under_odds": under,
-            "closing_over_odds": _to_num(r.get("closing_over_odds")) if r.get("closing_over_odds") not in (None, "") else over,
-            "closing_under_odds": _to_num(r.get("closing_under_odds")) if r.get("closing_under_odds") not in (None, "") else under,
+            "closing_over_odds": _to_num(r.get("closing_over_odds")) if close_valid else None,
+            "closing_under_odds": _to_num(r.get("closing_under_odds")) if close_valid else None,
+            "prices_verified": verified, "decision_time": r.get("decision_time"),
         })
     return archive
 
@@ -180,8 +203,9 @@ def merge_odds(dataset, archive, replace=True):
     """
     matched = 0
     for row in dataset:
-        key = (row.get("game_date", ""), factors._norm_name(row.get("pitcher_name")))
-        arch_lines = archive.get(key)
+        exact_key = (row.get("game_date", ""), row.get("game_pk"), row.get("pitcher_id"))
+        legacy_key = (row.get("game_date", ""), factors._norm_name(row.get("pitcher_name")))
+        arch_lines = archive.get(exact_key) or archive.get(legacy_key)
         if not arch_lines:
             if replace:
                 row["lines"] = []
@@ -197,6 +221,7 @@ def merge_odds(dataset, archive, replace=True):
                     ln.update({k: a[k] for k in
                                ("over_odds", "under_odds",
                                 "closing_over_odds", "closing_under_odds")})
+                    ln.update(prices_verified=a["prices_verified"], decision_time=a["decision_time"])
     return dataset, matched
 
 
@@ -249,13 +274,15 @@ def betting_summary(records):
         return {"n_bets": 0}
     staked_flat = len(bets)
     profit_flat = sum(r["profit"] for r in bets)
-    wins = sum(1 for r in bets if r.get("won"))
+    decided = [r for r in bets if r.get("won") is not None]
+    wins = sum(1 for r in decided if r.get("won"))
     kelly_staked = sum(r["kelly"] for r in bets if r["kelly"] > 0)
     kelly_profit = sum(r["profit"] * r["kelly"] for r in bets if r["kelly"] > 0)
     clvs = [r["clv"] for r in bets if r["clv"] is not None]
     return {
         "n_bets": len(bets),
-        "hit_rate": wins / len(bets),
+        "n_decided": len(decided), "n_pushes": len(bets) - len(decided),
+        "hit_rate": wins / len(decided) if decided else None,
         "roi_flat": profit_flat / staked_flat,
         "roi_kelly": (kelly_profit / kelly_staked) if kelly_staked else None,
         "avg_clv": (sum(clvs) / len(clvs)) if clvs else None,
@@ -274,10 +301,14 @@ def report(records):
     lines = []
     lines.append("=" * 60)
     lines.append("BACKTEST REPORT")
+    if any(r.get("synthetic") for r in records):
+        lines.append("SYNTHETIC SELF-CONSISTENCY ONLY: NOT REAL PERFORMANCE")
+    if not records:
+        return "\n".join(lines + ["No scored records; metrics unavailable."])
     lines.append("=" * 60)
     lines.append(f"props scored: {len(records)}  (resolved: {n_resolved})")
-    lines.append(f"log-loss: {ll:.4f}   brier: {br:.4f}   "
-                 f"ECE: {ece:.4f}   (lower is better; 0.693/0.25 = coinflip)")
+    lines.append(f"log-loss: {ll}   brier: {br}   ECE: {ece:.4f}")
+    lines.append("Thresholds from one start are correlated; prop count is not independent sample size.")
     lines.append("")
     lines.append("calibration (predicted P(over) vs realized over-rate):")
     lines.append(f"  {'bin':>12}  {'n':>5}  {'pred':>6}  {'actual':>6}  {'gap':>6}")
@@ -290,7 +321,7 @@ def report(records):
     lines.append("")
     if bet.get("n_bets"):
         lines.append(f"bets flagged (edge >= {MIN_EDGE:.0%}): {bet['n_bets']}")
-        lines.append(f"  hit rate : {bet['hit_rate']:.3f}")
+        lines.append(f"  hit rate : {bet['hit_rate']} (pushes excluded)")
         lines.append(f"  ROI flat : {bet['roi_flat']:+.3f} (profit per 1u staked)")
         if bet.get("roi_kelly") is not None:
             lines.append(f"  ROI kelly: {bet['roi_kelly']:+.3f}")
@@ -343,6 +374,7 @@ def synthetic_dataset(n_games=250, seed=1, flat_market=False):
             for off in (-1.5, -0.5, 0.5, 1.5):
                 ln = {"market": market, "line": center + off}
                 if flat_market:
+                    ln["synthetic_prices"] = True
                     ln["over_odds"] = -110
                     ln["under_odds"] = -110
                 lines.append(ln)

@@ -1,5 +1,9 @@
 # Betting Aid App
 
+## October 26 audit contract
+
+Model `mlb-audit-v5`, chat policy `chat-audited-v5.0`: see `docs/MLB_AUDIT_2026-10-26.md` and `docs/MLB_PIPELINE.md` for the authoritative implemented behavior. Numerical forecasts remain shadow. Only the judge publishes, subject to fresh live prices, nine-batter lineups, reviewed usage evidence and positive offered-price EV. PrizePicks outputs are leg research, with no fabricated entry EV/ROI. Returns without actual fills are paper results. Never present annual skill validation or synthetic checks as daily betting performance.
+
 ## Project overview
 A Flask web app (SportsAid) with two prediction pipelines:
 - **MLB pitcher props** (strikeouts, pitcher outs): a plate-appearance-level Monte Carlo simulator produces P(over/under) per posted line, compares against the de-vigged multi-book market, and logs edges/bets/Kelly stakes. Real-money focus: every prediction is logged and graded next-day (ROI + CLV).
@@ -50,7 +54,7 @@ A Flask web app (SportsAid) with two prediction pipelines:
 1. `python run_pipeline.py` — full run: snapshot prop lines → simulate slate → LLM lanes (if `ANTHROPIC_API_KEY` set) → PrizePicks lane → grade yesterday
 2. `python run_pipeline.py --stage odds` — hourly line snapshots (line history feeds CLV)
 3. `python run_pipeline.py --stage predict` — re-run after lineups are confirmed
-4. `python run_pipeline.py --stage llm` — facts → Claude predictor → judge only
+4. `python run_pipeline.py --stage llm` — refresh prices/shadow forecasts → facts → Claude predictor → judge
 5. `python app.py` — Flask dev server; home page shows sportsbook props (judge>llm>sim per prop) and the PrizePicks best-lines board
 
 ## Daily workflow (NBA)
@@ -71,10 +75,10 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - Model paths use `BASE_DIR = os.path.dirname(os.path.abspath(__file__))` for portability
 - Serving-time MLB code (`data_today.py`, `simulator.py`, `predict.py`, `grade.py`) must not import pybaseball/statcast/torch — those are training-only
 - Prop tables are append-only; never UPDATE or DELETE line snapshots (CLV grading depends on history)
-- Edges are always computed against the de-vigged multi-book consensus, never a single book's vig-included price; minimum edge to flag a bet is `MIN_EDGE` (3%)
+- Edges are always computed against the de-vigged multi-book consensus, never a single book's vig-included price; MLB base edge hurdle is 6 percentage points (8 for outs unders); the NBA UI threshold remains 3%
 - Team name mismatches between NBA API and Odds API are handled via `TEAM_NAME_FIXES` in `app.py`; MLB full-name → abbreviation mapping is `TEAM_ABBR` in `mlb/factors.py`
 - Park, umpire, and pitcher-form K factors are read from `mlb/cache/*.json` via `mlb/factors.py` and `mlb/form.py`, always falling back to 1.0 / no-op (neutral) — build them with `data_park.build_park_factors()`, `data_umpire.build_ump_factors()`, and `data_form.build_pitcher_form()` (heavyweight, run per season/weekly)
-- The simulator scales K odds by `k_park * k_ump * k_form`; the pitcher K rate is CSW-blended (`form.blended_k_rate`) before simulating — all four collapse to neutral when their cache is missing, so serving never hard-fails
+- The simulator scales K odds by `k_park * k_ump * k_form`; hand-set CSW and velocity adjustments are disabled in the default simulator; serving factors require dated snapshots
 - Before trusting the simulator with real money, run `python mlb/backtest.py <dataset> [--odds archive.csv]` — the model must be calibrated (low ECE) and, with odds merged, show positive ROI and CLV
 - Injury flags only apply to top-50 players by PPG (configurable via `get_top_players(n=50)`)
 - Suppressed picks (Out/Doubtful star) are shown dimmed with red badge; warned picks (Questionable/Day-To-Day) show orange badge

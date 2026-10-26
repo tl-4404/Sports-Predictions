@@ -1,0 +1,296 @@
+{
+  "scope": "annual_pitcher_event_rates_not_daily_props_or_betting_roi",
+  "model_status": "shadow",
+  "tuning_years": [
+    2023,
+    2024
+  ],
+  "holdout_year": 2025,
+  "cohort": "all pitchers with >=100 BF and >=1 GS in evaluation year, including rookies",
+  "baseline": "previous season only, 50 BF prior; prior league rate from previous year",
+  "uncertainty": "pitcher-block paired bootstrap; conditional on selected hyperparameters",
+  "events": {
+    "k": {
+      "selected_on_tuning_only": {
+        "decay": 0.5,
+        "strength": 200
+      },
+      "baseline_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.5231051773279809,
+        "brier_per_bf": 0.17010411867800934,
+        "weighted_rate_rmse": 0.03916310583593797
+      },
+      "challenger_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.5225814311797893,
+        "brier_per_bf": 0.16991882731117766,
+        "weighted_rate_rmse": 0.036721349265586845
+      },
+      "log_loss_delta_95pct_pitcher_bootstrap": [
+        -0.000888202254266923,
+        -0.00013297229618111517
+      ],
+      "delta_negative_is_better": true,
+      "year_by_year_tuning": {
+        "2023": {
+          "pitcher_seasons": 321,
+          "batters_faced": 127241,
+          "log_loss_per_bf": 0.5271197816194222,
+          "brier_per_bf": 0.17193504464962828,
+          "weighted_rate_rmse": 0.037192689762871246
+        },
+        "2024": {
+          "pitcher_seasons": 299,
+          "batters_faced": 121731,
+          "log_loss_per_bf": 0.5263162478508664,
+          "brier_per_bf": 0.17154327496023944,
+          "weighted_rate_rmse": 0.0364215343754044
+        }
+      },
+      "holdout_stress_cohorts": {
+        "at_least_10_starts": {
+          "baseline": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.5232726792601144,
+            "brier_per_bf": 0.17023524746327154,
+            "weighted_rate_rmse": 0.03657647089303029
+          },
+          "challenger": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.522935389022017,
+            "brier_per_bf": 0.17011160411126153,
+            "weighted_rate_rmse": 0.03484529912310496
+          }
+        },
+        "at_least_300_BF": {
+          "baseline": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.5216089807957706,
+            "brier_per_bf": 0.1694747937887375,
+            "weighted_rate_rmse": 0.03455478779606046
+          },
+          "challenger": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.5212992029030981,
+            "brier_per_bf": 0.16936691550571867,
+            "weighted_rate_rmse": 0.03295686691134217
+          }
+        },
+        "limited_prior_history_under_200_BF": {
+          "baseline": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.527233984047083,
+            "brier_per_bf": 0.17166293093460686,
+            "weighted_rate_rmse": 0.04753305568549713
+          },
+          "challenger": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.5264252997458592,
+            "brier_per_bf": 0.17139268240252128,
+            "weighted_rate_rmse": 0.044599807743027346
+          }
+        }
+      }
+    },
+    "bb": {
+      "selected_on_tuning_only": {
+        "decay": 0.5,
+        "strength": 200
+      },
+      "baseline_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.2993685076193747,
+        "brier_per_bf": 0.08084261514009991,
+        "weighted_rate_rmse": 0.021911738595152906
+      },
+      "challenger_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.29868634980906006,
+        "brier_per_bf": 0.08073122789742668,
+        "weighted_rate_rmse": 0.01920252706257896
+      },
+      "log_loss_delta_95pct_pitcher_bootstrap": [
+        -0.0009623345966660495,
+        -0.00042980837370946545
+      ],
+      "delta_negative_is_better": true,
+      "year_by_year_tuning": {
+        "2023": {
+          "pitcher_seasons": 321,
+          "batters_faced": 127241,
+          "log_loss_per_bf": 0.3012301560268502,
+          "brier_per_bf": 0.0816153706352972,
+          "weighted_rate_rmse": 0.021950830889976274
+        },
+        "2024": {
+          "pitcher_seasons": 299,
+          "batters_faced": 121731,
+          "log_loss_per_bf": 0.2952054649686259,
+          "brier_per_bf": 0.07949081287951672,
+          "weighted_rate_rmse": 0.02208331653226339
+        }
+      },
+      "holdout_stress_cohorts": {
+        "at_least_10_starts": {
+          "baseline": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.2928065686317728,
+            "brier_per_bf": 0.07853795268352404,
+            "weighted_rate_rmse": 0.01955728351922098
+          },
+          "challenger": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.2921884025589955,
+            "brier_per_bf": 0.07843658379232933,
+            "weighted_rate_rmse": 0.016766587233437925
+          }
+        },
+        "at_least_300_BF": {
+          "baseline": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.29162799654492644,
+            "brier_per_bf": 0.07813780712808448,
+            "weighted_rate_rmse": 0.019412703543943408
+          },
+          "challenger": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.29100439140078305,
+            "brier_per_bf": 0.07803367523250958,
+            "weighted_rate_rmse": 0.016514271504070064
+          }
+        },
+        "limited_prior_history_under_200_BF": {
+          "baseline": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.320665232503664,
+            "brier_per_bf": 0.08827643931115235,
+            "weighted_rate_rmse": 0.0285412417697158
+          },
+          "challenger": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.31998226256821405,
+            "brier_per_bf": 0.08816629682565985,
+            "weighted_rate_rmse": 0.0265416652880873
+          }
+        }
+      }
+    },
+    "hit": {
+      "selected_on_tuning_only": {
+        "decay": 0.75,
+        "strength": 800
+      },
+      "baseline_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.5286631084375416,
+        "brier_per_bf": 0.17235110909366805,
+        "weighted_rate_rmse": 0.030238444523761534
+      },
+      "challenger_holdout": {
+        "pitcher_seasons": 321,
+        "batters_faced": 127286,
+        "log_loss_per_bf": 0.527977111776912,
+        "brier_per_bf": 0.17211396650227392,
+        "weighted_rate_rmse": 0.0260234689429079
+      },
+      "log_loss_delta_95pct_pitcher_bootstrap": [
+        -0.0009823528129084722,
+        -0.0004068009673545067
+      ],
+      "delta_negative_is_better": true,
+      "year_by_year_tuning": {
+        "2023": {
+          "pitcher_seasons": 321,
+          "batters_faced": 127241,
+          "log_loss_per_bf": 0.535731888362314,
+          "brier_per_bf": 0.17552536772486374,
+          "weighted_rate_rmse": 0.027925102550314454
+        },
+        "2024": {
+          "pitcher_seasons": 299,
+          "batters_faced": 121731,
+          "log_loss_per_bf": 0.5292615008363245,
+          "brier_per_bf": 0.172679074593529,
+          "weighted_rate_rmse": 0.026022299943542954
+        }
+      },
+      "holdout_stress_cohorts": {
+        "at_least_10_starts": {
+          "baseline": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.5298880306091877,
+            "brier_per_bf": 0.1729017927010886,
+            "weighted_rate_rmse": 0.02796878755853953
+          },
+          "challenger": {
+            "pitcher_seasons": 184,
+            "batters_faced": 98518,
+            "log_loss_per_bf": 0.5292410660105241,
+            "brier_per_bf": 0.17267733389062195,
+            "weighted_rate_rmse": 0.023617668534978098
+          }
+        },
+        "at_least_300_BF": {
+          "baseline": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.5297410046269239,
+            "brier_per_bf": 0.17284385712494924,
+            "weighted_rate_rmse": 0.027133359174125384
+          },
+          "challenger": {
+            "pitcher_seasons": 175,
+            "batters_faced": 97546,
+            "log_loss_per_bf": 0.5291416701922418,
+            "brier_per_bf": 0.172633148741653,
+            "weighted_rate_rmse": 0.02292402226433853
+          }
+        },
+        "limited_prior_history_under_200_BF": {
+          "baseline": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.5312293087121236,
+            "brier_per_bf": 0.17343964615072655,
+            "weighted_rate_rmse": 0.03683165261285313
+          },
+          "challenger": {
+            "pitcher_seasons": 97,
+            "batters_faced": 25137,
+            "log_loss_per_bf": 0.5301644387112618,
+            "brier_per_bf": 0.17305073831205459,
+            "weighted_rate_rmse": 0.031107278818982325
+          }
+        }
+      }
+    }
+  },
+  "source": "MLB StatsAPI /api/v1/stats; season/pitching; sportIds=1; playerPool=ALL; limit=10000",
+  "source_sha256": {
+    "2020": "36a8e6abe00dcc0f8a8039869b002b09501b5287b3231e17dfbf58bb993e816f",
+    "2021": "f592185545bb15509db688d7ac981d3ac1e8fe628f5041b081cb4d6c99db9a4b",
+    "2022": "859c9173d7d862e2dbc0684fb7c5f484e4ab41cc79809b3374e0ab76a6b889f1",
+    "2023": "7b9ee6e0d3b8de2f9e87f57d2d37090c925b29fe69b6ff9514ab3f6a0b5c30f9",
+    "2024": "aa768ac3258613c3e82311d55611f5ab8b179e6801c1c57310530151c3cb3b89",
+    "2025": "96e5362564c34b0450a76ea2883c79dce507f4a2bb8996f3b79388b1edd0759a"
+  }
+}

@@ -13,7 +13,7 @@ if str(MLB) not in sys.path:
 def test_saved_policy_installs_recalibrated_audit():
     import llm_saved_pipeline as policy
 
-    assert policy.PIPELINE_VERSION == "chat-preserved-v4.0"
+    assert policy.PIPELINE_VERSION == "chat-audited-v5.0"
     prompt = policy.base.PREDICT_SYSTEM
     assert "WORKLOAD-STATES" in prompt
     assert "PLUS-4-BF" in prompt
@@ -133,8 +133,12 @@ def test_chat_runner_applies_external_model_policy():
 
 def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
     import llm_chat_runner as runner
+    import odds_props
+    import predict
 
     calls = []
+    monkeypatch.setattr(odds_props, "refresh", lambda gd=None: calls.append(("odds", gd)) or 2)
+    monkeypatch.setattr(predict, "predict_date", lambda gd=None: calls.append(("sim", gd)) or 2)
     monkeypatch.setattr(
         runner,
         "refresh_facts",
@@ -155,6 +159,8 @@ def test_chat_runner_refreshes_before_predict_and_judge(monkeypatch):
 
     assert result == 7
     assert calls == [
+        ("odds", "2026-07-10"),
+        ("sim", "2026-07-10"),
         ("facts", "2026-07-10"),
         ("predict", "2026-07-10"),
         ("judge", "2026-07-10"),

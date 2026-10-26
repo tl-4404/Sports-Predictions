@@ -54,9 +54,11 @@ def _reset_cache():
     _cache = None
 
 
-def get_form(pitcher_id):
+def get_form(pitcher_id, as_of_date=None):
     """Cached form dict for a pitcher, or None."""
-    return _load().get(str(pitcher_id))
+    from factors import snapshot_valid
+    entry = _load().get(str(pitcher_id))
+    return entry if entry and snapshot_valid(entry, as_of_date) else None
 
 
 def blended_k_rate(pitcher_id, k_season):
@@ -90,9 +92,9 @@ def velo_k_factor(pitcher_id):
     return max(VELO_CLAMP[0], min(factor, VELO_CLAMP[1]))
 
 
-def form_summary(pitcher_id):
+def form_summary(pitcher_id, as_of_date=None):
     """Short human/LLM-facing description of a pitcher's form, or None."""
-    form = get_form(pitcher_id)
+    form = get_form(pitcher_id, as_of_date)
     if not form:
         return None
     parts = []

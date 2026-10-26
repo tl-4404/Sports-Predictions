@@ -14,6 +14,8 @@ of the park and umpire factors.
 import json
 import os
 import unicodedata
+from datetime import date, datetime, timezone
+from integrity import timestamp
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,15 +63,27 @@ def _norm_name(name):
     return "".join(ch for ch in ascii_only.lower() if ch.isalpha())
 
 
-def park_k_factor(home_team_name):
+def snapshot_valid(entry, as_of_date):
+    if as_of_date is None:
+        return True  # legacy diagnostic helper; serving always supplies a cutoff
+    built = timestamp(entry.get("created_at"))
+    through = entry.get("through_date")
+    cutoff = (datetime.now(timezone.utc) if as_of_date == date.today().isoformat()
+              else timestamp(as_of_date + "T00:00:00Z"))
+    return bool(built and cutoff and built <= cutoff and isinstance(through, str)
+                and through < as_of_date)
+
+
+def park_k_factor(home_team_name, as_of_date=None):
     global _park_cache
     if _park_cache is None:
         _park_cache = _load(PARK_PATH)
     abbr = TEAM_ABBR.get(home_team_name, "")
-    return float((_park_cache.get(abbr) or {}).get("k_factor", 1.0))
+    entry = _park_cache.get(abbr) or {}
+    return float(entry.get("k_factor", 1.0)) if snapshot_valid(entry, as_of_date) else 1.0
 
 
-def ump_k_factor(ump_name):
+def ump_k_factor(ump_name, as_of_date=None):
     """K factor for a home-plate umpire by full name; 1.0 if unknown."""
     global _ump_cache
     if _ump_cache is None:
@@ -79,7 +93,7 @@ def ump_k_factor(ump_name):
     if not ump_name:
         return 1.0
     entry = _ump_cache.get(_norm_name(ump_name))
-    return float(entry.get("k_factor", 1.0)) if entry else 1.0
+    return float(entry.get("k_factor", 1.0)) if entry and snapshot_valid(entry, as_of_date) else 1.0
 
 
 def _reset_caches():
