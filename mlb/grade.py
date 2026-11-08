@@ -13,9 +13,9 @@ import sys
 from datetime import date, timedelta
 
 from mlb import db
-from mlb.data import game_artifacts
-from mlb.prediction.betting_math import american_to_decimal, consensus_p_over, devig_two_way
-from mlb.providers import mlb_api
+from mlb.data_fetching import game_artifacts
+from shared.betting.math import american_to_decimal, consensus_p_over, devig_two_way
+from mlb.data_fetching.providers import mlb_api
 
 
 def _norm(name):

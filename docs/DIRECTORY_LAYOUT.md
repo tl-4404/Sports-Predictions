@@ -1,94 +1,114 @@
-# Project directory and NBA inventory
+# Repository organization
 
-Cross-league clients live in root-level `providers/`. League-specific clients live
-in `nba/providers/` and `mlb/providers/`, beside each league's data, training,
-prediction, and grading logic. Run commands from the
-repository root with `python -m ...` so shared package imports resolve correctly.
+NBA and MLB own their source, data, models, artifacts and tests. Cross-league
+services live in `shared/`. The repository root contains developer configuration,
+dependency lists, documentation and the two stable application launch wrappers.
 
-## Provider ownership
+## League layout
 
-| Module | Current responsibility |
+| Folder | Responsibility |
 | --- | --- |
-| `providers/polymarket.py` | Public US league/events and NBA moneyline bid/ask odds; read only |
-| `nba/providers/odds.py` | The Odds API NBA moneylines, normalization, current-board SQLite writes |
-| `mlb/providers/odds.py` | MLB pitcher-prop API/scraper/stub ingestion and line snapshots |
-| `providers/prizepicks.py` | PrizePicks fetch/parser plus the existing MLB evaluation and grading lane |
-| `nba/providers/nba_api.py` | NBA Stats transport for scoreboard, team/player stats and historical game logs |
-| `mlb/providers/mlb_api.py` | MLB StatsAPI schedule, profiles, splits and actual results |
-| `nba/providers/espn.py` | ESPN NBA injuries filtered by NBA Stats top scorers |
-| `providers/http.py` | Shared scraper sessions and retries |
+| `<league>/data/cache/` | Historical data, feature caches, backtest datasets and metadata; generated and ignored |
+| `<league>/data/outputs/` | Current prediction/feature exports; generated and ignored |
+| `<league>/data/fixtures/` | Small, versioned offline input samples; MLB samples shipped today |
+| `<league>/data_fetching/` | Dataset assembly, feature-cache builders, league-specific PrizePicks configuration |
+| `<league>/data_fetching/providers/` | League APIs and market-specific sportsbook normalization/persistence |
+| `<league>/models/prediction/` | Daily inference, simulation, context lookups, research and forecast policies |
+| `<league>/models/training/` | Fitting, calibration and backtesting source code |
+| `<league>/saved_models/` | Serialized weights, scalers, feature columns and other trained artifacts; ignored |
+| `<league>/tests/` | Offline league regression and integration suites |
+| `<league>/docs/` | League-specific operating and model documentation |
+| `<league>/paths.py` | Canonical dataset and artifact paths, independent of the current working directory |
 
-Provider modules are imported individually. Importing `providers` itself triggers
-no network calls. NBA Stats SDK imports are lazy, allowing offline reconstruction
-without installing `nba_api`.
+NBA additionally owns `ledger/`, `forward.py`, `deployment/compose.yml` and optional
+`requirements-forward.txt`. MLB owns `db.py`, `grade.py`, `doctor.py` and
+`pipeline.py`. Historical MLB audit JSON lives in `mlb/data/ledgers/`; the files
+retain their original content and provenance.
 
-The existing PrizePicks module still includes an MLB-only consumer lane, and the
-odds modules include persistence. Moving them does not make those features generic
-or create an NBA PrizePicks model. Historical Statcast/weather feature builders stay
-under `mlb/data/`; they are heavyweight dataset jobs rather than shared live clients.
+## Shared components
 
-## NBA lifecycle
+| Location | Responsibility |
+| --- | --- |
+| `shared/data_fetching/polymarket.py` | Existing public Polymarket event, quote and settlement client/CLI |
+| `shared/data_fetching/sportsbooks.py` | The Odds API authentication and request transport used by NBA and MLB |
+| `shared/data_fetching/prizepicks.py` | League-independent, paginated projection client and parser; caller supplies league ID and stat mapping |
+| `shared/data_fetching/http.py` | Shared scraper sessions, headers and retry handling |
+| `shared/betting/math.py` | Odds conversion, de-vigging, consensus and Kelly functions |
+| `shared/data/sportsaid.db` | The single existing SQLite application database used by Flask and league adapters |
+| `shared/paths.py` | Repository root and shared data/database paths |
+| `shared/tests/` | Shared HTTP, Polymarket, PrizePicks, sportsbook transport and ownership checks |
+| `shared/web/` | Flask implementation, templates, CSS and web-specific tests |
 
-| Stage | Module | What exists |
-| --- | --- | --- |
-| Historical collection | `nba/data/build_training.py` | Legacy prior-day NBA Stats team snapshots; Base, Advanced, Misc, Four Factors and Opponent data |
-| Historical reconstruction | `nba/data/build_backtest_data.py` | Season and rolling team features, rest and back-to-back indicators, home-win labels; emits pregame features before ingesting each day's outcomes |
-| Training | `nba/training/model.py` | One PyTorch neural network: differential features, standardization, a 16-unit hidden layer, dropout and a win-probability output |
-| Daily features | `nba/prediction/features.py` | Joins daily scoreboard games with team-stat snapshots through `nba.providers.nba_api` |
-| Daily prediction | `nba/prediction/daily.py` | Loads NN/scaler/feature list; predicts home-win probability and adds ESPN injury notes |
-| Web display | `app.py:load_ev_picks` | Matches the current prediction CSV to sportsbook moneylines, de-vigs each pair and surfaces probability edges with injury flags |
+Shared transport and betting modules must not import NBA or MLB code. League
+adapters can import shared code. The MLB PrizePicks consumer stays in
+`mlb/models/prediction/prizepicks.py`, with mapping and fixture selection in
+`mlb/data_fetching/prizepicks.py`; the shared client never imports its simulator
+or tables. DraftKings/FanDuel pitcher-prop parsing remains an MLB adapter because
+its market rules and source IDs are specific to MLB.
 
-Saved NBA artifacts remain `nba/models/nba_model.pt`, `nba_scaler.joblib`, and
-`feature_columns.csv`. Generated datasets remain under `nba/cache/`. Current output
-files remain `nba/current_games_features.csv` and `nba/current_games_with_probs.csv`.
-SQLite remains at the project root; a provider move must not create a second DB.
+## Migration map
 
-Only the NN is implemented for NBA. No NBA LightGBM or XGBoost trainer/artifacts
-were found in the inspected checkout. The Polymarket client fetches quotes but is
-not yet matched to NBA model probabilities or the web board. Automated trading
-and an NBA agent forecast lane are not implemented.
+| Previous location | Current location |
+| --- | --- |
+| `providers/` | `shared/data_fetching/` (MLB PrizePicks consumer split out) |
+| `<league>/providers/` | `<league>/data_fetching/providers/` |
+| `<league>/data/*.py` | `<league>/data_fetching/*.py` |
+| `<league>/training/` | `<league>/models/training/` |
+| `<league>/prediction/` | `<league>/models/prediction/` |
+| `mlb/prediction/betting_math.py` | `shared/betting/math.py` |
+| `<league>/models/` artifacts | `<league>/saved_models/` |
+| `<league>/cache/` | `<league>/data/cache/` |
+| `mlb/fixtures/` | `mlb/data/fixtures/` |
+| `nba/current_games*.csv` | `nba/data/outputs/current_games*.csv` |
+| Root `sportsaid.db` | `shared/data/sportsaid.db` |
+| Root `tests/` | `nba/tests/`, `mlb/tests/`, `shared/tests/`, `shared/web/tests/` |
+| Root Flask implementation/assets | `shared/web/` |
+| `compose.nba.yml` | `nba/deployment/compose.yml` |
+| `requirements-nba-forward.txt` | `nba/requirements-forward.txt` |
 
-The new backtest dataset and the legacy NN use different feature schemas. The new
-builder is a dataset preparation step, not a completed evaluation of the saved NN.
-Do not feed it directly into the legacy trainer: use the explicit pregame feature
-allowlist from its metadata. See `docs/NBA_BACKTESTING.md` for validation guidance.
-
-Known existing limitations include the hardcoded `2025-26` daily stats season, a
-random training/validation split in the legacy NN, current-board odds refreshes
-that overwrite previous NBA prices, and no append-only NBA prediction/grading
-ledger. These behaviors are unchanged by directory organization.
+Every cached dataset, fixture, ledger and saved model is moved without rewriting
+its contents. Source paths come from league path modules or `shared.paths`.
+The five previously versioned NBA checkpoint/scaler/feature-list and current CSV
+artifacts have explicit ignore exceptions, preserving their version-control status.
+Other generated data and saved models remain ignored.
+`.env` stays at the repository root and relocated modules load it explicitly.
+Update external scheduled commands using old dotted module names or artifact
+paths to their equivalents above. Root `python app.py` and
+`python run_pipeline.py` remain valid. The NBA PostgreSQL schema and DSN behavior
+remain unchanged.
 
 ## Commands
 
 ```bash
-python -m providers.polymarket --moneylines --limit 3
-python -m nba.providers.odds
-python -m nba.prediction.features
-python -m nba.prediction.daily
-python -m nba.data.build_training
-python -m nba.data.build_backtest_data --seasons 2025-26
-python -m nba.training.model
+python app.py
 python run_pipeline.py --stage odds
+python -m mlb.pipeline --stage predict
+python -m shared.data_fetching.polymarket --moneylines --limit 3
+python -m nba.data_fetching.providers.odds
+python -m nba.models.prediction.features
+python -m nba.models.prediction.daily
+python -m nba.data_fetching.build_backtest_data --seasons 2025-26
+python -m nba.data_fetching.enrich_moneylines
+python -m nba.models.training.model
+python -m nba.forward --help
+python -m mlb.models.training.backtest --synthetic --flat-market
+docker compose --project-directory . -f nba/deployment/compose.yml up -d
+make install-dev
+make test
+make test-nba
+make test-mlb
+make test-shared
+make test-web
 ```
 
-The trainer starts training when run; daily prediction calls live providers. The
-organization checks use offline tests and import/compilation checks rather than
-executing those state-changing workflows.
+The test runner executes each suite in a fresh process and blocks external network
+connections. This supports the existing script-style end-to-end checks and
+pytest/unittest suites without leaking their global test doubles into one another.
+No training, live odds refresh, database reinitialization or trading is needed to
+verify this organization.
 
-## Import examples
-
-```python
-from providers.polymarket import fetch_moneylines
-from nba.providers import nba_api
-from mlb.providers import mlb_api
-from nba.providers.espn import get_team_injuries
-from nba.prediction.features import build_feature_rows_for_date
-```
-
-Polymarket and PrizePicks are shared provider entrypoints. The Odds API adapters
-remain league-specific because NBA moneylines and MLB pitcher props have different
-parsing, schemas, and workflows. An ESPN source implemented only for NBA injuries
-also belongs to NBA until we implement genuinely shared behavior.
-
-The old `integrations.polymarket`, root `odds_client.py`, and flat NBA script
-locations have been replaced. Use the module commands above.
+See [NBA backtesting](../nba/docs/BACKTESTING.md) and
+[MLB pipeline](../mlb/docs/PIPELINE.md) for model and evaluation details. The saved
+legacy NBA NN and the reconstructed backtest dataset have different feature
+schemas; a directory change does not make those schemas compatible. Existing model
+behavior, calibration rules and live-data limitations are preserved.

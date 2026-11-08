@@ -1,0 +1,110 @@
+"""SportsAid daily pipeline entrypoint — hosting-agnostic.
+
+Designed so any scheduler can drive it (cron, VPS, GitHub Actions):
+
+    python mlb/pipeline.py                    # full daily run for today
+    python mlb/pipeline.py --stage odds       # just refresh prop lines
+    python mlb/pipeline.py --stage predict    # just run the simulator
+    python mlb/pipeline.py --stage llm        # fresh chat-aligned facts -> predictor -> judge
+    python mlb/pipeline.py --stage prizepicks # scrape PrizePicks -> evaluate
+    python mlb/pipeline.py --stage grade      # grade yesterday + update calibration
+    python mlb/pipeline.py --stage calibrate  # rebuild calibration through latest graded date
+    python mlb/pipeline.py --stage doctor     # preflight: what's live-ready?
+    python mlb/pipeline.py --date 2026-07-02
+
+Suggested cron (adjust to taste):
+    0 14 * * *  full run (morning ET — probables are posted)
+    0 * * * *   --stage odds (hourly line snapshots → line history + CLV)
+    30 22 * * * --stage predict (re-run once lineups are confirmed)
+    0 11 * * *  --stage grade (grade yesterday, then persist calibration)
+
+The llm stage (facts / Claude predictor / judge) needs ANTHROPIC_API_KEY and
+`pip install anthropic`; a full run skips it quietly when the key is absent.
+"""
+import argparse
+import os
+import sys
+from datetime import date, timedelta
+
+STAGES = ("odds", "predict", "llm", "prizepicks", "grade", "calibrate", "doctor", "all")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="SportsAid MLB props pipeline")
+    ap.add_argument("--stage", choices=STAGES, default="all")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD (default today; grade defaults to yesterday)")
+    ap.add_argument("--sims", type=int, default=10000)
+    args = ap.parse_args()
+
+    if args.stage == "doctor":
+        from mlb import doctor
+        results = doctor.run()
+        print(doctor.report(results))
+        sys.exit(1 if any(s == doctor.FAIL for _, s, _ in results) else 0)
+
+    failures = []
+
+    if args.stage in ("odds", "all"):
+        from mlb.data_fetching.providers import odds
+        _run("odds", failures, lambda: odds.refresh(args.date))
+
+    if args.stage in ("predict", "all"):
+        from mlb.models.prediction import daily
+        _run("predict", failures,
+             lambda: daily.predict_date(args.date, n_sims=args.sims))
+
+    if args.stage == "llm" or (args.stage == "all" and os.getenv("ANTHROPIC_API_KEY")):
+        from mlb.models.prediction import llm_chat_runner
+        # This runner installs the preserved chat policy and appends a fresh research
+        # snapshot on every invocation. The simulator remains fully independent.
+        _run("llm", failures,
+             lambda: llm_chat_runner.run_all(args.date))
+    elif args.stage == "all":
+        print("[pipeline] skipping llm stage (no ANTHROPIC_API_KEY)")
+
+    if args.stage in ("prizepicks", "all"):
+        from mlb.models.prediction import prizepicks
+        _run("prizepicks", failures,
+             lambda: prizepicks.run_all(args.date))
+
+    if args.stage in ("grade", "all"):
+        from mlb import grade
+        from mlb.models.prediction import prizepicks
+        from mlb.models.training import calibration
+        grade_date = args.date if args.stage == "grade" else (
+            (date.today() - timedelta(days=1)).isoformat())
+        _run("grade", failures,
+             lambda: grade.grade_date(grade_date))
+        _run("prizepicks-grade", failures,
+             lambda: prizepicks.grade_date(grade_date))
+        # Calibration is intentionally fitted only after grading and only through
+        # the graded date, preventing future leakage into historical predictions.
+        _run("calibrate", failures,
+             lambda: calibration.fit(grade_date))
+
+    if args.stage == "calibrate":
+        from mlb.models.training import calibration
+        _run("calibrate", failures,
+             lambda: calibration.fit(args.date))
+        if not failures:
+            print(calibration.report(args.date))
+
+    if failures:
+        print(f"[pipeline] FAILED stages: {', '.join(failures)}")
+        sys.exit(1)
+    print("[pipeline] done")
+
+
+def _run(name, failures, fn):
+    print(f"[pipeline] === stage: {name} ===")
+    try:
+        result = fn()
+        if result is not None:
+            print(f"[pipeline] {name}: {result}")
+    except Exception as e:
+        print(f"[pipeline] stage {name} failed: {e}")
+        failures.append(name)
+
+
+if __name__ == "__main__":
+    main()

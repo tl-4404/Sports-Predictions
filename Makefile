@@ -36,43 +36,47 @@ setup: install env doctor              ## one-command first run: deps + .env + p
 
 .PHONY: doctor
 doctor: $(VENV)                        ## preflight: what's ready for a live run
-	-$(PY) run_pipeline.py --stage doctor
+	-$(PY) mlb/pipeline.py --stage doctor
 
 .PHONY: run
 run: $(VENV)                           ## full pipeline: odds -> predict -> llm -> prizepicks -> grade
-	$(PY) run_pipeline.py
+	$(PY) mlb/pipeline.py
 
 .PHONY: odds predict llm prizepicks grade
 odds predict llm prizepicks grade: $(VENV)   ## run a single pipeline stage
-	$(PY) run_pipeline.py --stage $@
+	$(PY) mlb/pipeline.py --stage $@
 
 .PHONY: web
 web: $(VENV)                           ## Flask dev server (the board at :5000)
-	$(PY) app.py
+	$(PY) shared/web/app.py
 
 .PHONY: backtest
 backtest: $(VENV)                      ## synthetic calibration + flat-market ROI check
-	$(PY) -m mlb.training.backtest --synthetic --flat-market
+	$(PY) -m mlb.models.training.backtest --synthetic --flat-market
 
 .PHONY: backtest-real
 backtest-real: $(VENV)                 ## run real dataset: make backtest-real DATA=... SIMS=10000
 	@test -n "$(DATA)" || (echo "DATA=path/to/backtest.json is required" && exit 2)
-	$(PY) -m mlb.training.backtest $(DATA) --sims $(or $(SIMS),10000)
+	$(PY) -m mlb.models.training.backtest $(DATA) --sims $(or $(SIMS),10000)
 
 .PHONY: backtest-data
 backtest-data: $(VENV)                 ## build data: make backtest-data START=... END=... WARMUP=... OUT=...
 	@test -n "$(START)" || (echo "START=YYYY-MM-DD is required" && exit 2)
 	@test -n "$(END)" || (echo "END=YYYY-MM-DD is required" && exit 2)
 	@test -n "$(WARMUP)" || (echo "WARMUP=YYYY-MM-DD is required" && exit 2)
-	$(PY) -m mlb.data.build_backtest_data $(START) $(END) \
-		--warmup-start $(WARMUP) --out $(or $(OUT),mlb/cache/backtest.json)
+	$(PY) -m mlb.data_fetching.build_backtest_data $(START) $(END) \
+		--warmup-start $(WARMUP) --out $(or $(OUT),mlb/data/cache/backtest.json)
 
-.PHONY: test
-test: $(VENV)                          ## run all offline test suites (no network)
-	$(PY) tests/test_pipeline_offline.py
-	$(PY) tests/test_prizepicks_offline.py
-	$(PY) tests/test_interface_and_toggle.py
-	$(PY) tests/test_infra.py
+.PHONY: install-dev
+install-dev: $(VENV)                   ## install serving + offline test dependencies
+	$(PIP) install -r requirements-dev.txt
+
+.PHONY: test test-nba test-mlb test-shared test-web
+test: $(VENV)                          ## run every offline suite in an isolated process
+	$(PY) scripts/run_tests.py
+
+test-nba test-mlb test-shared test-web: $(VENV) ## run tests owned by one component
+	$(PY) scripts/run_tests.py --suite $(patsubst test-%,%,$@)
 
 .PHONY: clean
 clean:                                 ## remove the venv

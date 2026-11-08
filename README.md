@@ -1,7 +1,7 @@
 # SportsAid Betting Aid App
 
 For NBA data sources and the historical dataset builder, see
-[docs/NBA_BACKTESTING.md](docs/NBA_BACKTESTING.md).
+[nba/docs/BACKTESTING.md](nba/docs/BACKTESTING.md).
 
 SportsAid is a Flask-based sports analysis application with an MLB pitcher-props
 pipeline designed around reproducible data collection, independent model lanes,
@@ -27,63 +27,73 @@ Predictions, line snapshots, results and calibration runs are stored in SQLite. 
 pipeline deliberately separates model generation from grading so historical records
 remain append-only and auditable.
 
-See [docs/MLB_PIPELINE.md](docs/MLB_PIPELINE.md) for the full design.
+See [mlb/docs/PIPELINE.md](mlb/docs/PIPELINE.md) for the full design.
 
-### Lifecycle directory map
+### Repository organization
 
 ```text
-providers/          Shared external data clients
-├── polymarket.py   Polymarket US moneyline prices
-├── prizepicks.py   PrizePicks provider and existing MLB evaluation lane
-└── http.py         Shared scraper HTTP helper
-nba/
-├── providers/      NBA Stats, NBA sportsbook odds, ESPN NBA injuries
-├── data/           Historical training/backtest dataset builders
-├── training/       PyTorch moneyline model trainer
-├── prediction/     Daily features and prediction orchestration
-├── cache/          Generated datasets (gitignored)
-└── models/         Model weights, scaler and feature list (gitignored)
-mlb/
-├── providers/      MLB StatsAPI and MLB sportsbook props
-├── data/           Historical collection and feature-cache builders
-├── training/       Model fitting, calibration and backtesting
-├── prediction/     Simulator, daily forecasts, betting math and LLM lanes
-├── cache/          Generated datasets and accuracy caches (gitignored)
-├── models/         Generated model artifacts (gitignored)
-├── db.py           MLB persistence
-├── grade.py        Postgame grading and CLV
-└── doctor.py       Operational readiness checks
+nba/                        NBA ownership
+  data/                     Cached datasets, generated outputs, fixture space
+  data_fetching/            Dataset builders and NBA/ESPN/odds adapters
+  models/                   prediction/ and training/ Python code
+  saved_models/             Weights, scalers, and feature lists
+  tests/                    NBA regression and forward-testing suites
+  ledger/                   PostgreSQL paper-testing ledger
+  docs/                     NBA data and evaluation documentation
+  deployment/               NBA PostgreSQL Compose configuration
+mlb/                        MLB ownership
+  data/                     cache/, fixtures/, outputs/, audit ledgers/
+  data_fetching/            Dataset/feature builders, StatsAPI and odds adapters
+  models/                   prediction/ and training/ Python code
+  saved_models/             Serialized trained model artifacts
+  tests/                    MLB pipeline, grading, data and integration suites
+  docs/                     MLB pipeline design
+  pipeline.py               MLB orchestration
+shared/                     Cross-league components
+  data_fetching/            Polymarket, sportsbook API, PrizePicks and HTTP clients
+  betting/                  Odds conversion, de-vigging, consensus and Kelly math
+  data/                     Shared application SQLite database
+  tests/                    Shared client and architecture tests
+  web/                      Flask app, templates, static assets and web tests
+  docs/                     Shared provider documentation
+scripts/                    Developer utilities and the offline test runner
+docs/                       Repository architecture and migration guide
+app.py, run_pipeline.py     Stable launch wrappers
 ```
 
-Dependencies flow from orchestration toward these stages; training-only modules are
-never imported by the serving providers or numerical simulator.
+`models/` contains Python source; `saved_models/` contains generated binaries.
+The previously versioned NBA checkpoint, scaler, feature list and current CSVs
+remain visible to Git at their new paths; other generated artifacts are ignored.
+Dataset builders live in `data_fetching/`; `data/` holds their artifacts. Shared
+clients handle transport and parsing; each league owns market selection, model
+inputs, predictions and persistence. Heavy training dependencies stay out of live
+MLB serving imports.
 
-See [docs/DIRECTORY_LAYOUT.md](docs/DIRECTORY_LAYOUT.md) for module responsibilities,
-the current NBA inventory, commands, and the distinction between the two NBA feature
-schemas. Run Python entrypoints as modules from the repository root:
+See [docs/DIRECTORY_LAYOUT.md](docs/DIRECTORY_LAYOUT.md) for path ownership and
+migration details. Run module commands from the repository root:
 
 ```bash
-python -m providers.polymarket --moneylines --limit 3
-python -m nba.providers.odds
-python -m nba.prediction.daily
+python -m shared.data_fetching.polymarket --moneylines --limit 3
+python -m nba.data_fetching.providers.odds
+python -m nba.models.prediction.daily
 ```
 
 ## Pipeline stages
 
 ```bash
-python run_pipeline.py --stage odds
-python run_pipeline.py --stage predict
-python run_pipeline.py --stage llm
-python run_pipeline.py --stage prizepicks
-python run_pipeline.py --stage grade
-python run_pipeline.py --stage calibrate
-python run_pipeline.py --stage doctor
+python mlb/pipeline.py --stage odds
+python mlb/pipeline.py --stage predict
+python mlb/pipeline.py --stage llm
+python mlb/pipeline.py --stage prizepicks
+python mlb/pipeline.py --stage grade
+python mlb/pipeline.py --stage calibrate
+python mlb/pipeline.py --stage doctor
 ```
 
 A full run executes the available stages in order:
 
 ```bash
-python run_pipeline.py
+python mlb/pipeline.py
 ```
 
 Use `--date YYYY-MM-DD` to run a specific slate and `--sims` to change the simulator
@@ -167,14 +177,14 @@ thresholds, probability caps and same-pitcher exposure controls.
 For a chronological real-game simulator backtest:
 
 ```bash
-python -m mlb.data.build_backtest_data 2025-03-27 2025-09-28 \
-  --warmup-start 2024-03-20 --out mlb/cache/backtest_2025.json
-python -m mlb.training.backtest mlb/cache/backtest_2025.json --sims 10000
+python -m mlb.data_fetching.build_backtest_data 2025-03-27 2025-09-28 \
+  --warmup-start 2024-03-20 --out mlb/data/cache/backtest_2025.json
+python -m mlb.models.training.backtest mlb/data/cache/backtest_2025.json --sims 10000
 ```
 
 The builder uses prior games only and writes a metadata sidecar describing the
 warmup, leakage controls and failures. See
-[docs/MLB_PIPELINE.md](docs/MLB_PIPELINE.md#building-chronological-backtest-data).
+[mlb/docs/PIPELINE.md](mlb/docs/PIPELINE.md#building-chronological-backtest-data).
 
 ## Data integrity principles
 
@@ -191,3 +201,29 @@ The MLB pipeline is actively being calibrated. External-model gates are intentio
 configurable so they can be reduced as SportsAid becomes a stronger standalone
 system. Changes that affect probability, selection or grading behavior should include
 regression tests and a policy-version update.
+
+## Development checks
+
+```bash
+make install-dev
+make test                   # all suites; network blocked; isolated processes
+make test-nba
+make test-mlb
+make test-shared
+make test-web
+```
+
+`python scripts/run_tests.py --suite nba` is the equivalent command with an active
+virtual environment. Isolation preserves the existing script-style regression
+suites, which intentionally replace module globals while exercising whole pipelines.
+Install `requirements-training.txt` separately when training or using the saved NBA
+neural network; install `nba/requirements-forward.txt` for the NBA ledger workflow.
+
+Start the local NBA ledger from the repository root with:
+
+```bash
+docker compose --project-directory . -f nba/deployment/compose.yml up -d
+```
+
+The project-directory argument retains the root `.env` and existing Compose project
+and volume naming after moving the configuration file.

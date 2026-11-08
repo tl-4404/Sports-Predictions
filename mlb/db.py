@@ -7,7 +7,7 @@ Core tables are append-only:
   calibration_runs — immutable fitted calibration snapshots
   calibration_buckets — empirical probability mapping for each snapshot
 
-Everything lives in the same sportsaid.db the Flask app reads.
+Everything lives in the same shared/data/sportsaid.db the Flask app reads.
 """
 import sqlite3
 from datetime import datetime, timezone
@@ -19,6 +19,8 @@ MARKETS = ("pitcher_strikeouts", "pitcher_outs")
 
 
 def connect(db_path=None):
+    if db_path is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path or DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn

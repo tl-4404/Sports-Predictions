@@ -1,0 +1,18 @@
+services:
+  nba-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: sportsaid
+      POSTGRES_DB: sportsaid_nba
+      POSTGRES_PASSWORD: ${NBA_POSTGRES_PASSWORD:?Set NBA_POSTGRES_PASSWORD in your local .env}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - nba-forward-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sportsaid -d sportsaid_nba"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  nba-forward-pgdata:

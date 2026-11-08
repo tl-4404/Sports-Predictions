@@ -6,7 +6,7 @@ reachability, the configured odds source, PrizePicks, and the optional accuracy
 caches. Every check is isolated so one failure can't mask the others.
 
     python -m mlb.doctor
-    python run_pipeline.py --stage doctor
+    python mlb/pipeline.py --stage doctor
 
 Exit code is non-zero when any hard FAIL is present (handy in scripts/CI).
 """
@@ -39,7 +39,7 @@ def _check_anthropic():
 
 def _check_statsapi():
     try:
-        from mlb.providers import mlb_api
+        from mlb.data_fetching.providers import mlb_api
         games = mlb_api.get_schedule(date.today().isoformat())
         return OK, f"reachable — {len(games)} games today"
     except Exception as e:
@@ -47,7 +47,7 @@ def _check_statsapi():
 
 
 def _check_odds():
-    from mlb.providers import odds
+    from mlb.data_fetching.providers import odds
     source = (os.getenv("ODDS_SOURCE") or "").strip().lower() or (
         "oddsapi" if os.getenv("ODDS_API_KEY") else "stub")
     if source in ("stub", "fixture"):
@@ -67,7 +67,7 @@ def _check_odds():
 
 
 def _check_prizepicks():
-    from providers import prizepicks
+    from mlb.data_fetching import prizepicks
     if not os.getenv("PRIZEPICKS_LIVE"):
         return WARN, "PRIZEPICKS_LIVE unset — offline stub (set it for live PrizePicks)"
     try:
@@ -85,7 +85,7 @@ def _check_caches():
                            "pitcher_form.json") if (base / n).exists()]
     if not present:
         return WARN, ("no park/ump/form caches — simulator runs neutral; build "
-                      "with mlb.data.park/umpire/form for accuracy")
+                      "with mlb.data_fetching.park/umpire/form for accuracy")
     return OK, f"present: {', '.join(present)}"
 
 
