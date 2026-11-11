@@ -61,6 +61,6 @@ A Flask web app (SportsAid) with two prediction pipelines:
 - Suppressed picks (Out/Doubtful star) are shown dimmed with red badge; warned picks (Questionable/Day-To-Day) show orange badge
 
 ## Instructions
-- After completing a task that involves tool use, provide a quick summary of the work you've done.
+- After completing a task that involves tool use, provide a summary of the work you've done.
 - Make all independent tool calls in parallel. Only call tools sequentially when a later call depends on the result of an earlier one. Never use placeholders or guess missing parameters.
 - Never speculate about code you have not opened. Read relevant files before answering questions about the codebase.
