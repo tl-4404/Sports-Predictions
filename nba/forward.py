@@ -166,10 +166,10 @@ def main(argv=None):
     with db.connect() as conn:
         if args.stage == "init-db":
             db.initialize(conn)
-            print("NBA PostgreSQL ledger schema v1 ready; existing SQLite app data unchanged.")
+            print("Quant PostgreSQL ledger schema v2 ready; existing SQLite app data unchanged.")
             return 0
         # Fail explicitly if setup hasn't run, rather than silently creating storage.
-        if not conn.execute("SELECT 1 FROM nba_ledger.migrations WHERE version=1").fetchone():
+        if not conn.execute("SELECT 1 FROM quant_ledger.migrations WHERE version=2").fetchone():
             raise RuntimeError("Run python -m nba.forward init-db first")
         if args.stage == "report":
             print(json.dumps(db.report(conn, args.limit), default=json_default, indent=2))

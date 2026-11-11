@@ -10,9 +10,9 @@ def connect(url=None):
     from dotenv import load_dotenv
     from shared.paths import PROJECT_ROOT
     load_dotenv(PROJECT_ROOT / ".env")
-    url = url or os.getenv("NBA_DATABASE_URL")
+    url = url or os.getenv("DATABASE_URL") or os.getenv("NBA_DATABASE_URL")
     if not url:
-        raise RuntimeError("Set NBA_DATABASE_URL in .env to a PostgreSQL connection string")
+        raise RuntimeError("Set DATABASE_URL in .env to a PostgreSQL connection string")
     try:
         import psycopg
         from psycopg.rows import dict_row
@@ -23,18 +23,28 @@ def connect(url=None):
 
 
 def initialize(conn):
-    """Transactional, serialized version-1 migration; never drop user objects."""
+    """Atomically install v1+v2 or upgrade/rename an existing v1 ledger."""
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(734920261)")
-        conn.execute("CREATE SCHEMA IF NOT EXISTS nba_ledger")
-        conn.execute("""CREATE TABLE IF NOT EXISTS nba_ledger.migrations
+        state = conn.execute("SELECT to_regnamespace('nba_ledger') IS NOT NULL AS legacy, "
+                             "to_regnamespace('quant_ledger') IS NOT NULL AS current").fetchone()
+        if state["legacy"] and state["current"]:
+            raise RuntimeError("Both ledger schemas exist; resolve before initialization")
+        schema_dir = Path(__file__).parent
+        if state["legacy"]:
+            conn.execute((schema_dir / "upgrade_quant_ledger.sql").read_text())
+            return
+        conn.execute("CREATE SCHEMA IF NOT EXISTS quant_ledger")
+        conn.execute("""CREATE TABLE IF NOT EXISTS quant_ledger.migrations
                      (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())""")
-        versions = [r["version"] for r in conn.execute("SELECT version FROM nba_ledger.migrations")]
-        if any(v != 1 for v in versions):
-            raise RuntimeError("Unsupported NBA ledger schema version")
-        if 1 not in versions:
-            conn.execute(Path(__file__).with_name("schema.sql").read_text())
-            conn.execute("INSERT INTO nba_ledger.migrations (version) VALUES (1)")
+        versions = {r["version"] for r in conn.execute("SELECT version FROM quant_ledger.migrations")}
+        if not versions:
+            conn.execute((schema_dir / "schema.sql").read_text())
+            conn.execute("INSERT INTO quant_ledger.migrations (version) VALUES (1), (2)")
+        elif versions == {1}:
+            conn.execute((schema_dir / "upgrade_quant_ledger.sql").read_text())
+        elif versions != {1, 2}:
+            raise RuntimeError("Unsupported quant ledger schema version")
 
 
 def jsonb(value):
@@ -45,19 +55,19 @@ def jsonb(value):
 
 def start_run(conn, stage, config, source="nba_forward", version="nba_forward_v1"):
     run_id = uuid4()
-    conn.execute("""INSERT INTO nba_ledger.runs (id,stage,source,version,config)
+    conn.execute("""INSERT INTO quant_ledger.runs (id,stage,source,version,config)
                   VALUES (%s,%s,%s,%s,%s)""", (run_id, stage, source, version, jsonb(config)))
     return run_id
 
 
 def log_event(conn, run_id, kind, payload):
-    conn.execute("INSERT INTO nba_ledger.run_events (run_id,kind,payload) VALUES (%s,%s,%s)",
+    conn.execute("INSERT INTO quant_ledger.run_events (run_id,kind,payload) VALUES (%s,%s,%s)",
                  (run_id, kind, jsonb(payload)))
 
 
 def save_snapshot(conn, run_id, packet):
     snapshot_id = uuid4()
-    conn.execute("""INSERT INTO nba_ledger.market_snapshots
+    conn.execute("""INSERT INTO quant_ledger.market_snapshots
         (id,run_id,event_id,market_slug,scheduled_start,observed_at,pregame,long_team,short_team,
          long_price,short_price,long_shares,short_shares,raw_event,raw_market,raw_book)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
@@ -70,7 +80,7 @@ def save_snapshot(conn, run_id, packet):
 
 def save_attempt(conn, run_id, market_slug, model, prompt_version, prompt, inputs):
     attempt_id = uuid4()
-    conn.execute("""INSERT INTO nba_ledger.forecast_attempts
+    conn.execute("""INSERT INTO quant_ledger.forecast_attempts
         (id,run_id,market_slug,producer,producer_model,prompt_version,prompt_sha256,inputs_sha256,inputs)
         VALUES (%s,%s,%s,'anthropic',%s,%s,%s,%s,%s)""", (
         attempt_id, run_id, market_slug, model, prompt_version, content_hash(prompt),
@@ -101,7 +111,7 @@ def save_prediction(conn, *, run_id, snapshot_id, packet, forecast, inputs, raw_
               else "insufficient_displayed_size" if quantity is None or quantity < shares
               else "positive_net_ev_paper_only")
     prediction_id = uuid4()
-    conn.execute("""INSERT INTO nba_ledger.predictions
+    conn.execute("""INSERT INTO quant_ledger.predictions
         (id,run_id,snapshot_id,attempt_id,source,producer_model,producer_version,inputs_sha256,
          inputs,raw_response,long_win_probability,chosen_long,entry_price,fee_per_share,
          paper_shares,paper_bet,abstain,decision_reason)
@@ -119,19 +129,19 @@ def save_settlement(conn, run_id, market_slug, response):
     # Repeated grading is idempotent; actual provider corrections append new rows.
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (market_slug,))
-        previous = conn.execute("""SELECT long_payout FROM nba_ledger.settlements
+        previous = conn.execute("""SELECT long_payout FROM quant_ledger.settlements
             WHERE market_slug=%s ORDER BY observed_at DESC,id DESC LIMIT 1""", (market_slug,)).fetchone()
         if previous and previous["long_payout"] == payout:
             return False
-        conn.execute("""INSERT INTO nba_ledger.settlements (run_id,market_slug,long_payout,raw_response)
+        conn.execute("""INSERT INTO quant_ledger.settlements (run_id,market_slug,long_payout,raw_response)
                      VALUES (%s,%s,%s,%s)""", (run_id, market_slug, payout, jsonb(response)))
     return True
 
 
 def tracked_markets(conn, *, unsettled_only=False):
-    where = "AND NOT EXISTS (SELECT 1 FROM nba_ledger.settlements z WHERE z.market_slug=s.market_slug)" if unsettled_only else ""
-    return conn.execute("""SELECT DISTINCT ON (s.market_slug) s.* FROM nba_ledger.market_snapshots s
-        WHERE EXISTS (SELECT 1 FROM nba_ledger.predictions p WHERE p.snapshot_id=s.id) """ + where +
+    where = "AND NOT EXISTS (SELECT 1 FROM quant_ledger.settlements z WHERE z.market_slug=s.market_slug)" if unsettled_only else ""
+    return conn.execute("""SELECT DISTINCT ON (s.market_slug) s.* FROM quant_ledger.market_snapshots s
+        WHERE EXISTS (SELECT 1 FROM quant_ledger.predictions p WHERE p.snapshot_id=s.id) """ + where +
         " ORDER BY s.market_slug, s.observed_at DESC").fetchall()
 
 
@@ -141,4 +151,4 @@ def report(conn, limit=100):
         paper_bet,paper_shares,abstain,decision_reason,fee_per_share,gross_ev_per_share,net_ev_per_share,
         close_observed_at,closing_price,clv_price,clv_relative,result,result_observed_at,long_payout,
         gross_pnl_per_share,net_pnl_per_share,brier,log_loss
-        FROM nba_ledger.prediction_report ORDER BY created_at DESC,id DESC LIMIT %s""", (limit,)).fetchall()
+        FROM quant_ledger.prediction_report ORDER BY created_at DESC,id DESC LIMIT %s""", (limit,)).fetchall()
